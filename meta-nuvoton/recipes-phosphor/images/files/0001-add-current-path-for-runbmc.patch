@@ -1,0 +1,26 @@
+From e73b67d022f34e4cde548e8f71bfd267c5843c98 Mon Sep 17 00:00:00 2001
+From: kwliu <kwliu@nuvoton.com>
+Date: Mon, 25 Feb 2019 19:51:26 +0800
+Subject: [PATCH] add current path for runbmc
+
+---
+ UpdateInputsBinaries_RunBMC.py | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/UpdateInputsBinaries_RunBMC.py b/UpdateInputsBinaries_RunBMC.py
+index cc82b5f..d25e00a 100644
+--- a/UpdateInputsBinaries_RunBMC.py
++++ b/UpdateInputsBinaries_RunBMC.py
+@@ -32,6 +32,9 @@ uboot_env_source = os.path.join(ref_dir, "uboot_env_runbmc.bin")
+ 
+ try:
+ 
++	urrpath = os.getcwd()
++	os.chdir(os.path.dirname(os.path.abspath(__file__)))
++
+ 	print("-----------------------------------------")
+ 	print("Updating input binaries for Nuvoton's RunBMC")
+ 	print("-----------------------------------------")
+-- 
+2.17.1
+

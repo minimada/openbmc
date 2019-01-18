@@ -1,0 +1,669 @@
+From 5177dc965b8a08d12688e30a394d53dd9429b36e Mon Sep 17 00:00:00 2001
+From: kwliu <kwliu@nuvoton.com>
+Date: Mon, 25 Feb 2019 19:48:02 +0800
+Subject: [PATCH] igps remove sudo
+
+---
+ ImageGeneration/BinaryGenerator.py          |  86 ++---
+ ImageGeneration/BinarySignatureGenerator.py | 332 ++++++++++----------
+ ImageProgramming/UartUpdate.py              | 222 ++++++-------
+ 3 files changed, 320 insertions(+), 320 deletions(-)
+
+diff --git a/ImageGeneration/BinaryGenerator.py b/ImageGeneration/BinaryGenerator.py
+index d3ec8d6..0356af6 100644
+--- a/ImageGeneration/BinaryGenerator.py
++++ b/ImageGeneration/BinaryGenerator.py
+@@ -1,43 +1,43 @@
+-# SPDX-License-Identifier: GPL-2.0
+-#
+-# Nuvoton IGPS: Image Generation And Programming Scripts For Poleg BMC
+-#
+-# Copyright (C) 2018 Nuvoton Technologies, All Rights Reserved
+-#-------------------------------------------------------------------------
+-
+-import sys
+-import os
+-
+-
+-bingo = "bingo"
+-linux_prefix = "sudo ./"
+-
+-
+-class BingoError(Exception):
+-
+-	def __init__(self, value):
+-		self.strerror = "Bingo error value:" + str(value)
+-	def __str__(self):
+-		return repr(self.strerror)
+-
+-
+-def generate_binary(xmlFile, outputFile):
+-
+-	_bingo = bingo
+-	if os.name != "nt":
+-		_bingo = linux_prefix + bingo
+-	
+-	cmd = "%s %s -o %s" % (_bingo, xmlFile, outputFile)
+-
+-	currpath = os.getcwd()
+-	os.chdir(os.path.dirname(os.path.abspath(__file__)))
+-
+-	try:
+-		rc = os.system(cmd)
+-		if rc != 0:
+-			raise BingoError(rc)
+-	except:
+-		print("generating %s failed" % (binfile))
+-		raise
+-	finally:
+-		os.chdir(currpath)
++# SPDX-License-Identifier: GPL-2.0
++#
++# Nuvoton IGPS: Image Generation And Programming Scripts For Poleg BMC
++#
++# Copyright (C) 2018 Nuvoton Technologies, All Rights Reserved
++#-------------------------------------------------------------------------
++
++import sys
++import os
++
++
++bingo = "bingo"
++linux_prefix = "./"
++
++
++class BingoError(Exception):
++
++	def __init__(self, value):
++		self.strerror = "Bingo error value:" + str(value)
++	def __str__(self):
++		return repr(self.strerror)
++
++
++def generate_binary(xmlFile, outputFile):
++
++	_bingo = bingo
++	if os.name != "nt":
++		_bingo = linux_prefix + bingo
++	
++	cmd = "%s %s -o %s" % (_bingo, xmlFile, outputFile)
++
++	currpath = os.getcwd()
++	os.chdir(os.path.dirname(os.path.abspath(__file__)))
++
++	try:
++		rc = os.system(cmd)
++		if rc != 0:
++			raise BingoError(rc)
++	except:
++		print("generating %s failed" % (binfile))
++		raise
++	finally:
++		os.chdir(currpath)
+diff --git a/ImageGeneration/BinarySignatureGenerator.py b/ImageGeneration/BinarySignatureGenerator.py
+index 54f78bd..c6a2fb8 100644
+--- a/ImageGeneration/BinarySignatureGenerator.py
++++ b/ImageGeneration/BinarySignatureGenerator.py
+@@ -1,166 +1,166 @@
+-# SPDX-License-Identifier: GPL-2.0
+-#
+-# Nuvoton IGPS: Image Generation And Programming Scripts For Poleg BMC
+-#
+-# Copyright (C) 2018 Nuvoton Technologies, All Rights Reserved
+-#-------------------------------------------------------------------------
+-
+-import sys
+-import os
+-
+-
+-def sign_binary(binfile, begin_offset, priv_key, modulu, embed_signature, outputFile):
+-	
+-	if os.name != "win32":
+-		signit_filename = signit + ".exe"
+-
+-	if os.path.isfile(os.path.join(os.getcwd(), signit_filename)):
+-		sign_binary_signit(binfile, begin_offset, priv_key, modulu, embed_signature, outputFile)
+-	else:
+-		sign_binary_openssl(binfile, begin_offset, priv_key, modulu, embed_signature, outputFile)
+-
+-
+-signit = "signit"
+-linux_prefix = "sudo ./"
+-
+-
+-class SignitError(Exception):
+-
+-	def __init__(self, value):
+-		self.strerror = "Signit error value:" + str(value)
+-	def __str__(self):
+-		return repr(self.strerror)
+-
+-
+-def sign_binary_signit(binfile, begin_offset, priv_key, modulu, embed_signature, outputFile):
+-
+-	_signit = signit
+-	if os.name != "nt":
+-		_signit = linux_prefix + signit
+-
+-	cmd = "%s %s --begin_offset 0x%x --private_key_file %s --modulu_file %s --ebmed_signature 0x%x -o %s -r" \
+-	% (_signit, binfile, begin_offset, priv_key, modulu, embed_signature, outputFile)
+-
+-	currpath = os.getcwd()
+-	os.chdir(os.path.dirname(os.path.abspath(__file__)))
+-
+-	try:
+-		rc = os.system(cmd)
+-		if rc != 0:
+-			raise SignitError(rc)
+-	except:
+-		print("signing %s failed" % (binfile))
+-		raise
+-	finally:
+-		os.chdir(currpath)
+-
+-
+-openssl = "openssl"
+-
+-
+-class OpensslError(Exception):
+-
+-	def __init__(self, value):
+-		self.strerror = "Openssl error value:" + str(value)
+-	def __str__(self):
+-		return repr(self.strerror)
+-
+-
+-def convertBinToDER(public, private):
+-
+-	DER_template_array = ""
+-
+-	# MODULUS (PUBLIC KEY)
+-	DER_template_array += "".join(['\x30', '\x82', '\x04', '\xa4', '\x02', '\x01', '\x00', '\x02', '\x82', '\x01', '\x01', '\x00'])
+-	DER_template_array += public
+-	
+-	# PRIVATE EXPONENT
+-	DER_template_array += "".join(['\x02', '\x03', '\x01', '\x00', '\x01', '\x02', '\x82', '\x01', '\x01', '\x00'])
+-	DER_template_array += private
+-
+-	DER_template_array += "".join(['\x02', '\x81', '\x81', '\x00'])	
+-	DER_template_array += "".join(['\xff']*0x80)
+-
+-	DER_template_array += "".join(['\x02', '\x81', '\x81', '\x00'])	
+-	DER_template_array += "".join(['\xff']*0x80)
+-
+-	DER_template_array += "".join(['\x02', '\x81', '\x80'])	
+-	DER_template_array += "".join(['\xff']*0x80)
+-
+-	DER_template_array += "".join(['\x02', '\x81', '\x81', '\x00'])	
+-	DER_template_array += "".join(['\xff']*0x80)
+-
+-	DER_template_array += "".join(['\x02', '\x81', '\x80'])	
+-	DER_template_array += "".join(['\xff']*0x80)
+-
+-	return DER_template_array
+-
+-
+-def sign_binary_openssl(bin_filename, begin_offset, privkey_filename, modulu_filename, embed_signature, output_filename):
+-
+-	_openssl = openssl
+-	if os.name != "nt":
+-		_openssl = linux_prefix + openssl
+-
+-	currpath = os.getcwd()
+-	os.chdir(os.path.dirname(os.path.abspath(__file__)))
+-
+-	try:
+-		signed_area_filename = bin_filename + "_signed_area_file"
+-		key_filename = "key_file"
+-
+-		# build temporary file starting from the desired offset of the binfile
+-		bin_file = open(bin_filename, "rb")
+-		input = bin_file.read()
+-		bin_file.close()
+-
+-		signed_area_file = open(signed_area_filename, "wb")
+-		signed_area_file.write(input[begin_offset:])
+-		signed_area_file.close()
+-
+-		# get keys and build a key in DER format
+-		module_file = open(modulu_filename, "rb")
+-		modulus = module_file.read()
+-		module_file.close()
+-
+-		privkey_file = open(privkey_filename, "rb")
+-		privkey = privkey_file.read()
+-		privkey_file.close()
+-
+-		key = convertBinToDER(modulus, privkey)
+-
+-		key_file = open(key_filename, "wb")
+-		key_file.write(key)
+-		key_file.close()
+-
+-		# call openssl to generate a signature
+-		cmd = "%s dgst -sha256 -binary -keyform der -out %s -sign %s %s" \
+-		% (_openssl, output_filename, key_filename, signed_area_filename)
+-
+-		rc = os.system(cmd)
+-		if rc != 0:
+-			raise SignitError(rc)
+-
+-		# get the generated signature and embed it in the input binary
+-		output_file = open(output_filename, "rb")
+-		signature = output_file.read()
+-		output_file.close()
+-
+-		output = input[:embed_signature] + signature[::-1] + input[(embed_signature + len(signature)):]
+-
+-		# write the input with the embedded signature to the output file
+-		output_file = open(output_filename, "wb+")
+-		output_file.write(output)
+-		output_file.close()
+-
+-	except:
+-		print("signing %s failed" % (bin_filename))
+-		raise
+-	finally:
+-		# remove temporary files
+-		if os.path.isfile(signed_area_filename):
+-			os.remove(signed_area_filename)
+-		if os.path.isfile(key_filename):
+-			os.remove(key_filename)
+-
+-		os.chdir(currpath)
++# SPDX-License-Identifier: GPL-2.0
++#
++# Nuvoton IGPS: Image Generation And Programming Scripts For Poleg BMC
++#
++# Copyright (C) 2018 Nuvoton Technologies, All Rights Reserved
++#-------------------------------------------------------------------------
++
++import sys
++import os
++
++
++def sign_binary(binfile, begin_offset, priv_key, modulu, embed_signature, outputFile):
++	
++	if os.name != "win32":
++		signit_filename = signit + ".exe"
++
++	if os.path.isfile(os.path.join(os.getcwd(), signit_filename)):
++		sign_binary_signit(binfile, begin_offset, priv_key, modulu, embed_signature, outputFile)
++	else:
++		sign_binary_openssl(binfile, begin_offset, priv_key, modulu, embed_signature, outputFile)
++
++
++signit = "signit"
++linux_prefix = "./"
++
++
++class SignitError(Exception):
++
++	def __init__(self, value):
++		self.strerror = "Signit error value:" + str(value)
++	def __str__(self):
++		return repr(self.strerror)
++
++
++def sign_binary_signit(binfile, begin_offset, priv_key, modulu, embed_signature, outputFile):
++
++	_signit = signit
++	if os.name != "nt":
++		_signit = linux_prefix + signit
++
++	cmd = "%s %s --begin_offset 0x%x --private_key_file %s --modulu_file %s --ebmed_signature 0x%x -o %s -r" \
++	% (_signit, binfile, begin_offset, priv_key, modulu, embed_signature, outputFile)
++
++	currpath = os.getcwd()
++	os.chdir(os.path.dirname(os.path.abspath(__file__)))
++
++	try:
++		rc = os.system(cmd)
++		if rc != 0:
++			raise SignitError(rc)
++	except:
++		print("signing %s failed" % (binfile))
++		raise
++	finally:
++		os.chdir(currpath)
++
++
++openssl = "openssl"
++
++
++class OpensslError(Exception):
++
++	def __init__(self, value):
++		self.strerror = "Openssl error value:" + str(value)
++	def __str__(self):
++		return repr(self.strerror)
++
++
++def convertBinToDER(public, private):
++
++	DER_template_array = ""
++
++	# MODULUS (PUBLIC KEY)
++	DER_template_array += "".join(['\x30', '\x82', '\x04', '\xa4', '\x02', '\x01', '\x00', '\x02', '\x82', '\x01', '\x01', '\x00'])
++	DER_template_array += public
++	
++	# PRIVATE EXPONENT
++	DER_template_array += "".join(['\x02', '\x03', '\x01', '\x00', '\x01', '\x02', '\x82', '\x01', '\x01', '\x00'])
++	DER_template_array += private
++
++	DER_template_array += "".join(['\x02', '\x81', '\x81', '\x00'])	
++	DER_template_array += "".join(['\xff']*0x80)
++
++	DER_template_array += "".join(['\x02', '\x81', '\x81', '\x00'])	
++	DER_template_array += "".join(['\xff']*0x80)
++
++	DER_template_array += "".join(['\x02', '\x81', '\x80'])	
++	DER_template_array += "".join(['\xff']*0x80)
++
++	DER_template_array += "".join(['\x02', '\x81', '\x81', '\x00'])	
++	DER_template_array += "".join(['\xff']*0x80)
++
++	DER_template_array += "".join(['\x02', '\x81', '\x80'])	
++	DER_template_array += "".join(['\xff']*0x80)
++
++	return DER_template_array
++
++
++def sign_binary_openssl(bin_filename, begin_offset, privkey_filename, modulu_filename, embed_signature, output_filename):
++
++	_openssl = openssl
++	if os.name != "nt":
++		_openssl = linux_prefix + openssl
++
++	currpath = os.getcwd()
++	os.chdir(os.path.dirname(os.path.abspath(__file__)))
++
++	try:
++		signed_area_filename = bin_filename + "_signed_area_file"
++		key_filename = "key_file"
++
++		# build temporary file starting from the desired offset of the binfile
++		bin_file = open(bin_filename, "rb")
++		input = bin_file.read()
++		bin_file.close()
++
++		signed_area_file = open(signed_area_filename, "wb")
++		signed_area_file.write(input[begin_offset:])
++		signed_area_file.close()
++
++		# get keys and build a key in DER format
++		module_file = open(modulu_filename, "rb")
++		modulus = module_file.read()
++		module_file.close()
++
++		privkey_file = open(privkey_filename, "rb")
++		privkey = privkey_file.read()
++		privkey_file.close()
++
++		key = convertBinToDER(modulus, privkey)
++
++		key_file = open(key_filename, "wb")
++		key_file.write(key)
++		key_file.close()
++
++		# call openssl to generate a signature
++		cmd = "%s dgst -sha256 -binary -keyform der -out %s -sign %s %s" \
++		% (_openssl, output_filename, key_filename, signed_area_filename)
++
++		rc = os.system(cmd)
++		if rc != 0:
++			raise SignitError(rc)
++
++		# get the generated signature and embed it in the input binary
++		output_file = open(output_filename, "rb")
++		signature = output_file.read()
++		output_file.close()
++
++		output = input[:embed_signature] + signature[::-1] + input[(embed_signature + len(signature)):]
++
++		# write the input with the embedded signature to the output file
++		output_file = open(output_filename, "wb+")
++		output_file.write(output)
++		output_file.close()
++
++	except:
++		print("signing %s failed" % (bin_filename))
++		raise
++	finally:
++		# remove temporary files
++		if os.path.isfile(signed_area_filename):
++			os.remove(signed_area_filename)
++		if os.path.isfile(key_filename):
++			os.remove(key_filename)
++
++		os.chdir(currpath)
+diff --git a/ImageProgramming/UartUpdate.py b/ImageProgramming/UartUpdate.py
+index 35364f2..f5ee266 100644
+--- a/ImageProgramming/UartUpdate.py
++++ b/ImageProgramming/UartUpdate.py
+@@ -1,111 +1,111 @@
+-# SPDX-License-Identifier: GPL-2.0
+-#
+-# Nuvoton IGPS: Image Generation And Programming Scripts For Poleg BMC
+-#
+-# Copyright (C) 2018 Nuvoton Technologies, All Rights Reserved
+-#-------------------------------------------------------------------------
+-
+-import sys
+-import os
+-
+-uartUpdateTool = "Uartupdatetool"
+-linux_prefix = "sudo ./"
+-
+-serialportnum_file = os.path.join(".", "SerialPortNumber.txt")
+-serialportbaudrate_file = os.path.join(".", "SerialPortBaudRate.txt")
+-
+-class UartError(Exception):
+-	def __init__(self, value):
+-		self.strerror = "UartUpdateTool error value:" + str(value)
+-	def __str__(self):
+-		return repr(self.strerror)
+-
+-def uart_write_to_mem(port, baudrate, addr, file):
+-
+-	_uartUpdateTool = uartUpdateTool
+-	if os.name != "nt":
+-		_uartUpdateTool = linux_prefix + uartUpdateTool
+-
+-	cmd = "%s -port %s -baudrate %d -opr wr -addr %s -file %s" \
+-			% (_uartUpdateTool, port, baudrate, addr, file)
+-	rc = os.system(cmd)
+-	if rc != 0:
+-		expStr = "Writing %s to %s failed (port %s baudrate %d)" \
+-			% (file, addr, port, baudrate)
+-		raise UartError(expStr)
+-
+-def uart_read_from_mem(port, baudrate, addr, size, file):
+-
+-	_uartUpdateTool = uartUpdateTool
+-	if os.name != "nt":
+-		_uartUpdateTool = linux_prefix + uartUpdateTool
+-
+-	cmd = "%s -port %s -baudrate %d -opr rd -addr %s -size %d -file %s" \
+-			% (_uartUpdateTool, port, baudrate, addr, size, file)
+-	rc = os.system(cmd)
+-	if rc != 0:
+-		expStr = "Reading from %s failed (port %s baudrate %d)" \
+-			% (addr, port, baudrate)
+-		raise UartError(expStr)
+-
+-def uart_execute_nonreturn_code(port, baudrate, addr):
+-
+-	_uartUpdateTool = uartUpdateTool
+-	if os.name != "nt":
+-		_uartUpdateTool = linux_prefix + uartUpdateTool
+-
+-	cmd = "%s -port %s -baudrate %d -opr go -addr %s" \
+-			% (_uartUpdateTool, port, baudrate, addr)
+-	rc = os.system(cmd)
+-	if rc != 0:
+-		expStr = "Executing nonreturn code from %d failed (port %s baudrate %d)" \
+-			% (addr, port, baudrate)
+-		raise UartError(expStr)
+-
+-def uart_execute_returnable_code(port, baudrate, addr):
+-
+-	_uartUpdateTool = uartUpdateTool
+-	if os.name != "nt":
+-		_uartUpdateTool = linux_prefix + uartUpdateTool
+-
+-	cmd = "%s -port %s -baudrate %d -opr call -addr %s" \
+-			% (_uartUpdateTool, port, baudrate, addr)
+-	rc = os.system(cmd)
+-	if rc != 0:
+-		expStr = "Executing returnable code from %d failed (port %s baudrate %d)" \
+-			% (addr, port, baudrate)
+-		raise UartError(expStr)
+-
+-def check_com():
+-
+-	# initial values
+-	port = "COM1"
+-	baudrate = 115200
+-	
+-	print("----------------------------------------------------")
+-	print(" Scan COM ports, searching for a Poleg in UFPP mode ")
+-	print("----------------------------------------------------")
+-	_uartUpdateTool = uartUpdateTool
+-	if os.name != "nt":
+-		_uartUpdateTool = linux_prefix + uartUpdateTool
+-
+-	cmd = "%s -opr scan -baudrate %d" % (_uartUpdateTool, baudrate)
+-	rc = os.system(cmd)
+-	if rc != 0:
+-		print("Scanning failed. Port will be loaded from %s" % (serialportnum_file))
+-
+-	if os.path.isfile(serialportnum_file):
+-		file = open(serialportnum_file, "r")
+-		port = file.read()
+-		file.close()
+-
+-	if os.path.isfile(serialportbaudrate_file):
+-		file = open(serialportbaudrate_file, "r")
+-		baudrate = file.read()
+-		file.close()
+-
+-	print("Serial Port settings:  %s; %s bps") % (port, baudrate)
+-	print("---------------------------------------------")
+-	print("")
+-	
+-	return [str(port), int(baudrate)]
++# SPDX-License-Identifier: GPL-2.0
++#
++# Nuvoton IGPS: Image Generation And Programming Scripts For Poleg BMC
++#
++# Copyright (C) 2018 Nuvoton Technologies, All Rights Reserved
++#-------------------------------------------------------------------------
++
++import sys
++import os
++
++uartUpdateTool = "Uartupdatetool"
++linux_prefix = "./"
++
++serialportnum_file = os.path.join(".", "SerialPortNumber.txt")
++serialportbaudrate_file = os.path.join(".", "SerialPortBaudRate.txt")
++
++class UartError(Exception):
++	def __init__(self, value):
++		self.strerror = "UartUpdateTool error value:" + str(value)
++	def __str__(self):
++		return repr(self.strerror)
++
++def uart_write_to_mem(port, baudrate, addr, file):
++
++	_uartUpdateTool = uartUpdateTool
++	if os.name != "nt":
++		_uartUpdateTool = linux_prefix + uartUpdateTool
++
++	cmd = "%s -port %s -baudrate %d -opr wr -addr %s -file %s" \
++			% (_uartUpdateTool, port, baudrate, addr, file)
++	rc = os.system(cmd)
++	if rc != 0:
++		expStr = "Writing %s to %s failed (port %s baudrate %d)" \
++			% (file, addr, port, baudrate)
++		raise UartError(expStr)
++
++def uart_read_from_mem(port, baudrate, addr, size, file):
++
++	_uartUpdateTool = uartUpdateTool
++	if os.name != "nt":
++		_uartUpdateTool = linux_prefix + uartUpdateTool
++
++	cmd = "%s -port %s -baudrate %d -opr rd -addr %s -size %d -file %s" \
++			% (_uartUpdateTool, port, baudrate, addr, size, file)
++	rc = os.system(cmd)
++	if rc != 0:
++		expStr = "Reading from %s failed (port %s baudrate %d)" \
++			% (addr, port, baudrate)
++		raise UartError(expStr)
++
++def uart_execute_nonreturn_code(port, baudrate, addr):
++
++	_uartUpdateTool = uartUpdateTool
++	if os.name != "nt":
++		_uartUpdateTool = linux_prefix + uartUpdateTool
++
++	cmd = "%s -port %s -baudrate %d -opr go -addr %s" \
++			% (_uartUpdateTool, port, baudrate, addr)
++	rc = os.system(cmd)
++	if rc != 0:
++		expStr = "Executing nonreturn code from %d failed (port %s baudrate %d)" \
++			% (addr, port, baudrate)
++		raise UartError(expStr)
++
++def uart_execute_returnable_code(port, baudrate, addr):
++
++	_uartUpdateTool = uartUpdateTool
++	if os.name != "nt":
++		_uartUpdateTool = linux_prefix + uartUpdateTool
++
++	cmd = "%s -port %s -baudrate %d -opr call -addr %s" \
++			% (_uartUpdateTool, port, baudrate, addr)
++	rc = os.system(cmd)
++	if rc != 0:
++		expStr = "Executing returnable code from %d failed (port %s baudrate %d)" \
++			% (addr, port, baudrate)
++		raise UartError(expStr)
++
++def check_com():
++
++	# initial values
++	port = "COM1"
++	baudrate = 115200
++	
++	print("----------------------------------------------------")
++	print(" Scan COM ports, searching for a Poleg in UFPP mode ")
++	print("----------------------------------------------------")
++	_uartUpdateTool = uartUpdateTool
++	if os.name != "nt":
++		_uartUpdateTool = linux_prefix + uartUpdateTool
++
++	cmd = "%s -opr scan -baudrate %d" % (_uartUpdateTool, baudrate)
++	rc = os.system(cmd)
++	if rc != 0:
++		print("Scanning failed. Port will be loaded from %s" % (serialportnum_file))
++
++	if os.path.isfile(serialportnum_file):
++		file = open(serialportnum_file, "r")
++		port = file.read()
++		file.close()
++
++	if os.path.isfile(serialportbaudrate_file):
++		file = open(serialportbaudrate_file, "r")
++		baudrate = file.read()
++		file.close()
++
++	print("Serial Port settings:  %s; %s bps") % (port, baudrate)
++	print("---------------------------------------------")
++	print("")
++	
++	return [str(port), int(baudrate)]
+-- 
+2.17.1
+
