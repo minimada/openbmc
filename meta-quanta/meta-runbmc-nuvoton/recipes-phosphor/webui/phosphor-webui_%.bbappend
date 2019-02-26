@@ -4,6 +4,7 @@ FILESEXTRAPATHS_prepend := "${THISDIR}/${PN}:"
 
 SRC_URI += "file://0001-Implement-KVM-in-webui.patch"
 SRC_URI += "file://0002-Implement-VM-in-webui.patch"
+SRC_URI += "file://0001-add-quanta-and-nuvoton-logo.patch"
 
 do_compile () {
 
