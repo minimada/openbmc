@@ -1,0 +1,84 @@
+From 95c4878317b32cbae7dc1554b4e3d9db735ecaa0 Mon Sep 17 00:00:00 2001
+From: kwliu <kwliu@nuvoton.com>
+Date: Tue, 5 Mar 2019 15:21:33 +0800
+Subject: [PATCH] Add OCP setting GPIO
+
+---
+ arch/arm/boot/dts/nuvoton-npcm750-runbmc.dts | 26 +++++++++++++++++---
+ 1 file changed, 23 insertions(+), 3 deletions(-)
+
+diff --git a/arch/arm/boot/dts/nuvoton-npcm750-runbmc.dts b/arch/arm/boot/dts/nuvoton-npcm750-runbmc.dts
+index d922b88a05c6..2b54f76ac338 100644
+--- a/arch/arm/boot/dts/nuvoton-npcm750-runbmc.dts
++++ b/arch/arm/boot/dts/nuvoton-npcm750-runbmc.dts
+@@ -529,6 +529,12 @@
+ 						input;
+ 						line-name = "RM_THROTTLE_EN_N";
+ 					};
++					G1A_P0_7 {
++						gpio-hog;
++						gpio = <7 0>;
++						input;
++						line-name = "FM_CPU1_PROCHOT_LVT3_N";
++					};
+ 					G1A_P1_0 {
+ 						gpio-hog;
+ 						gpios = <8 0>;
+@@ -563,7 +569,7 @@
+ 						gpio-hog;
+ 						gpios = <13 0>;
+ 						input;
+-						line-name = "H_CPU0_FAST_WAKE_LVT3_N";
++						line-name = "IRQ_PVCCIN_CPU0_VRHOT_LVC3_N";
+ 					};
+ 					G1A_P1_6 {
+ 						gpio-hog;
+@@ -575,7 +581,7 @@
+ 						gpio-hog;
+ 						gpios = <15 0>;
+ 						input;
+-						line-name = "FM_CPU_CATERR_LVT3_N";
++						line-name =  "FM_CPU0_PROCHOT_LVT3_N";
+ 					};
+ 				};
+ 				pca9539_g1b: pca9539-g1b@75 {
+@@ -608,6 +614,12 @@
+ 						input;
+ 						line-name = "PVDDQ_KLM_PINALERT_N";
+ 					};
++					G1B_P0_4 {
++						gpio-hog;
++						gpios = <4 0>;
++						input;
++						line-name = "SMB_MM9_RST_N"
++					};
+ 					G1B_P0_5 {
+ 						gpio-hog;
+ 						gpios = <5 0>;
+@@ -778,6 +790,12 @@
+ 						input;
+ 						line-name = "FM_BIOS_POST_CMPLT_N";
+ 					};
++					G2A_P1_7 {
++						gpio-hog;
++						gpios = <15 0>;
++						input;
++						line-name = "IRQ_PVCCIN_CPU1_VRHOT_LVC3_N";
++					};
+ 				};
+ 				pca9539_g2b: pca9539-g2b@75 {
+ 					compatible = "nxp,pca9539";
+@@ -1093,7 +1111,9 @@
+ 				&gpio122_pins
+ 				&gpio121_pins
+ 				&gpio120_pins
+-				&gpio123_pins>;
++				&gpio123_pins
++				&gpio4_pins
++				&gpio187_pins>;
+ 	};
+ 
+ 	jtag {
+-- 
+2.17.1
+

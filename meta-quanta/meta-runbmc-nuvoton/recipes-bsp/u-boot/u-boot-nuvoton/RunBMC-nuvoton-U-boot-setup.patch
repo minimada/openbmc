@@ -1,0 +1,53 @@
+From 89f7110ae470ddb6ee627505ef7d49c90c031cc4 Mon Sep 17 00:00:00 2001
+From: Samuel Jiang <Samuel.Jiang@quantatw.com>
+Date: Sun, 3 Mar 2019 22:23:42 +0800
+Subject: [PATCH] board: nuvoton: Poleg_init: refactor inital runbmc-nuvoton
+ registers
+
+refactor inital SPMOD to 7
+refactor inital set VGA clock
+inital IRQ setting
+---
+ board/nuvoton/PolegSVB/PolegSVB_init.c | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/board/nuvoton/PolegSVB/PolegSVB_init.c b/board/nuvoton/PolegSVB/PolegSVB_init.c
+index 2cdbf492e0..4c56fdbff4 100644
+--- a/board/nuvoton/PolegSVB/PolegSVB_init.c
++++ b/board/nuvoton/PolegSVB/PolegSVB_init.c
+@@ -56,9 +56,12 @@ int print_cpuinfo (void)
+ 
+ 	#define ROMCODE_VER     *((PTR32)(ROMCODE_VER_ADDR))
+ 	#define BOOTER_VER      *((PTR32)(BOOTER_VER_ADDR))
+-  #define SPSWC           0x004
++  #define SPSWC           0x038
++  #define CLKSEL          0x004
+   #define MFSEL1          0x00c
+   #define INTCR           0x03c
++  #define MFSEL3          0x064
++
+ 
+ 	printf(KMAG "RomCode   : v%02x.%02x.%02x.%02x\n", MSB0(ROMCODE_VER), MSB1(ROMCODE_VER), MSB2(ROMCODE_VER), MSB3(ROMCODE_VER));
+ 	printf("BootBlock : v%02x.%02x.%02x.%02x\n", MSB0(BOOTER_VER),  MSB1(BOOTER_VER),  MSB2(BOOTER_VER),  MSB3(BOOTER_VER));
+@@ -67,14 +70,16 @@ int print_cpuinfo (void)
+ 
+ 	printf("PolegSVB Power-On Straps = 0x%x\n",(unsigned int)*((PTR32)(GCR_BASE_ADDR + 0x004)));
+ 
+-  unsigned int spmod, hsl1sel;
++  unsigned int spmod, hsl1sel, clkref;
+   spmod = 0x06;
+   hsl1sel = 0x400;
++  clkref = 0x20000;
+ 
+   *((volatile uint32_t *)(GCR_BASE_ADDR + SPSWC)) |= spmod;
+   *((volatile uint32_t *)(GCR_BASE_ADDR + MFSEL1)) |= hsl1sel;
+   *((volatile uint32_t *)(GCR_BASE_ADDR + INTCR)) |= 0x4700;
+-  *((volatile uint32_t *)(CLK_BASE_ADDR + 0x004)) |= 0x01E18F49;
++  *((volatile uint32_t *)(CLK_BASE_ADDR + CLKSEL)) &= (~clkref);
++  *((volatile uint32_t *)(GCR_BASE_ADDR + MFSEL3)) = 0x00011E00;
+ 
+ 
+ 
+-- 
+2.17.1
+
