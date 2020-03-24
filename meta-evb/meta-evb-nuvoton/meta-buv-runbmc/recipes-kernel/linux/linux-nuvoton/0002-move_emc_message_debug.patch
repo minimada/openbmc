@@ -1,0 +1,22 @@
+diff --git a/drivers/net/ethernet/nuvoton/npcm7xx_emc.c b/drivers/net/ethernet/nuvoton/npcm7xx_emc.c
+index dac9c45f4e7b..2dddcf7bd74a 100644
+--- a/drivers/net/ethernet/nuvoton/npcm7xx_emc.c
++++ b/drivers/net/ethernet/nuvoton/npcm7xx_emc.c
+@@ -1731,7 +1731,7 @@ static int npcm7xx_get_settings(struct net_device *netdev,
+ 	if (!phydev)
+ 		return -ENODEV;
+ 
+-	dev_info(&ether->pdev->dev, "\n\nnpcm7xx_get_settings\n");
++	dev_dbg(&ether->pdev->dev, "\n\nnpcm7xx_get_settings\n");
+ 	phy_ethtool_ksettings_get(phydev, cmd);
+ 
+ 	return 0;
+@@ -1747,7 +1747,7 @@ static int npcm7xx_set_settings(struct net_device *netdev,
+ 	if (!phydev)
+ 		return -ENODEV;
+ 
+-	dev_info(&ether->pdev->dev, "\n\nnpcm7xx_set_settings\n");
++	dev_dbg(&ether->pdev->dev, "\n\nnpcm7xx_set_settings\n");
+ 	ret =  phy_ethtool_ksettings_set(phydev, cmd);
+ 
+ 	return ret;

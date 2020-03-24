@@ -1,0 +1,57 @@
+diff --git a/arch/arm/dts/nuvoton-npcm750-evb.dts b/arch/arm/dts/nuvoton-npcm750-evb.dts
+index 60457d9292..62eebf714c 100644
+--- a/arch/arm/dts/nuvoton-npcm750-evb.dts
++++ b/arch/arm/dts/nuvoton-npcm750-evb.dts
+@@ -36,7 +36,8 @@
+ 		i2c15 = &i2c15;
+ 		spi0 = "/fiu0@fb000000";
+ 		spi3 = "/fiu3@c0000000";
+-		spi4 = "/pspi1@f0200000";
++		spi4 = "/fiux@fb001000";
++		spi5 = "/pspi1@f0200000";
+ 		//mmc0 = "/sdhci0@f0840000";
+ 		mmc1 = "/sdhci1@f0842000";
+ 		gpio0 = "/gpio0@f0010000";
+@@ -129,7 +130,7 @@
+ 		spi_flash@1 {
+ 			compatible = "spi-flash";
+ 			reg = <1>;
+-			memory-map = <0x88000000 0x2000000>;
++			memory-map = <0x88000000 0x4000000>;
+ 		};
+ 	};
+ 	fiu3@c0000000 {
+@@ -142,7 +143,20 @@
+ 		spi_flash@0 {
+ 			compatible = "spi-flash";
+ 			reg = <0>; /* Chip select 0 */
+-			memory-map = <0xA0000000 0x2000000>;
++			memory-map = <0xA0000000 0x8000000>;
++		};
++	};
++    fiux@fb001000 {
++		compatible = "nuvoton,npcm750-fiu";
++		#address-cells = <1>;
++		#size-cells = <0>;
++		reg = <0xfb001000 0x1000>;
++		index = <4>;
++		spi-max-frequency = <50000000>;
++		spi_flash@0 {
++		compatible = "spi-flash";
++			reg = <0>; /* Chip select 0 */
++			memory-map = <0xF8000000 0x1000000>;
+ 		};
+ 	};
+ 
+@@ -284,9 +298,9 @@
+ 		phy-mode = "rmii";
+ 		id = <0>;
+ 	};
+-	emc1: emc1@f0825000 {
++	emc1: emc1@f0826000 {
+ 		compatible = "nuvoton,npcm750-emc";
+-		reg = <0xF0825000 0x1000>;
++		reg = <0xF0826000 0x1000>;
+ 		phy-mode = "rmii";
+ 		id = <1>;
+ 	};
