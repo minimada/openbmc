@@ -11,4 +11,5 @@ SRC_URI_append_buv-runbmc = " \
   file://0001-dts-nuvoton-add-buv-runbmc-support.patch \
   file://0002-move_emc_message_debug.patch \
   file://0003-Revert-mtd-spi-nor-fix-options-for-mx66l51235f.patch \
+  file://0004-extend-rofs-for-64MB-SPI.patch \
   "
