@@ -1,5 +1,5 @@
 FILESEXTRAPATHS_prepend := "${THISDIR}/u-boot-nuvoton:"
 
-SRCREV = "a92a440e2ef910880103a8cda7d09dae00a2b2af"
+SRCREV = "a386041c45fa11b4f7f066f07b0f4446c1daaee1"
 
 SRC_URI_append = " file://buv_dts.patch"
