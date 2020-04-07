@@ -1,0 +1,114 @@
+From 5ea561a2e1cac0972f518d232b013f65d1ec5992 Mon Sep 17 00:00:00 2001
+From: YSChu <yschu@nuvoton.com>
+Date: Mon, 12 Aug 2019 16:59:06 +0800
+Subject: [PATCH 1/2] add "Unit" property in Value interface
+
+Signed-off-by: YSChu <yschu@nuvoton.com>
+---
+ src/ADCSensor.cpp       |  2 ++
+ src/CPUSensor.cpp       |  2 ++
+ src/HwmonTempSensor.cpp |  2 ++
+ src/MCUTempSensor.cpp   |  2 ++
+ src/PSUSensor.cpp       | 20 ++++++++++++++++++++
+ src/TachSensor.cpp      |  2 ++
+ 6 files changed, 30 insertions(+)
+
+diff --git a/src/ADCSensor.cpp b/src/ADCSensor.cpp
+index 2ab1a4f..21131b8 100644
+--- a/src/ADCSensor.cpp
++++ b/src/ADCSensor.cpp
+@@ -62,6 +62,8 @@ ADCSensor::ADCSensor(const std::string& path,
+     sensorInterface = objectServer.add_interface(
+         "/xyz/openbmc_project/sensors/voltage/" + name,
+         "xyz.openbmc_project.Sensor.Value");
++    sensorInterface->register_property("Unit",
++        std::string("xyz.openbmc_project.Sensor.Value.Unit.Volts"));
+     if (thresholds::hasWarningInterface(thresholds))
+     {
+         thresholdInterfaceWarning = objectServer.add_interface(
+diff --git a/src/CPUSensor.cpp b/src/CPUSensor.cpp
+index d3789fd..baf6e0d 100644
+--- a/src/CPUSensor.cpp
++++ b/src/CPUSensor.cpp
+@@ -56,6 +56,8 @@ CPUSensor::CPUSensor(const std::string& path, const std::string& objectType,
+         sensorInterface = objectServer.add_interface(
+             "/xyz/openbmc_project/sensors/temperature/" + name,
+             "xyz.openbmc_project.Sensor.Value");
++        sensorInterface->register_property("Unit",
++            std::string("xyz.openbmc_project.Sensor.Value.Unit.DegreesC"));
+         if (thresholds::hasWarningInterface(thresholds))
+         {
+             thresholdInterfaceWarning = objectServer.add_interface(
+diff --git a/src/HwmonTempSensor.cpp b/src/HwmonTempSensor.cpp
+index f110b37..305f9e1 100644
+--- a/src/HwmonTempSensor.cpp
++++ b/src/HwmonTempSensor.cpp
+@@ -54,6 +54,8 @@ HwmonTempSensor::HwmonTempSensor(
+         "/xyz/openbmc_project/sensors/temperature/" + name,
+         "xyz.openbmc_project.Sensor.Value");
+ 
++    sensorInterface->register_property("Unit",
++        std::string("xyz.openbmc_project.Sensor.Value.Unit.DegreesC"));
+     if (thresholds::hasWarningInterface(thresholds))
+     {
+         thresholdInterfaceWarning = objectServer.add_interface(
+diff --git a/src/MCUTempSensor.cpp b/src/MCUTempSensor.cpp
+index 06376b6..f1739d0 100644
+--- a/src/MCUTempSensor.cpp
++++ b/src/MCUTempSensor.cpp
+@@ -69,6 +69,8 @@ MCUTempSensor::MCUTempSensor(std::shared_ptr<sdbusplus::asio::connection>& conn,
+         "/xyz/openbmc_project/sensors/temperature/" + name,
+         "xyz.openbmc_project.Sensor.Value");
+ 
++    sensorInterface->register_property("Unit",
++        std::string("xyz.openbmc_project.Sensor.Value.Unit.DegreesC"));
+     if (thresholds::hasWarningInterface(thresholds))
+     {
+         thresholdInterfaceWarning = objectServer.add_interface(
+diff --git a/src/PSUSensor.cpp b/src/PSUSensor.cpp
+index 2996b6f..f3739c5 100644
+--- a/src/PSUSensor.cpp
++++ b/src/PSUSensor.cpp
+@@ -70,6 +70,26 @@ PSUSensor::PSUSensor(const std::string& path, const std::string& objectType,
+     sensorInterface = objectServer.add_interface(
+         dbusPath, "xyz.openbmc_project.Sensor.Value");
+ 
++    if (sensorTypeName == "temperature")
++    {
++        sensorInterface->register_property("Unit",
++            std::string("xyz.openbmc_project.Sensor.Value.Unit.DegreesC"));
++    }
++    else if (sensorTypeName == "voltage")
++    {
++        sensorInterface->register_property("Unit",
++            std::string("xyz.openbmc_project.Sensor.Value.Unit.Volts"));
++    }
++    else if (sensorTypeName == "current")
++    {
++        sensorInterface->register_property("Unit",
++            std::string("xyz.openbmc_project.Sensor.Value.Unit.Amperes"));
++    }
++    else if (sensorTypeName == "power")
++    {
++        sensorInterface->register_property("Unit",
++            std::string("xyz.openbmc_project.Sensor.Value.Unit.Watts"));
++    }
+     if (thresholds::hasWarningInterface(thresholds))
+     {
+         thresholdInterfaceWarning = objectServer.add_interface(
+diff --git a/src/TachSensor.cpp b/src/TachSensor.cpp
+index bea79d8..db772ba 100644
+--- a/src/TachSensor.cpp
++++ b/src/TachSensor.cpp
+@@ -59,6 +59,8 @@ TachSensor::TachSensor(const std::string& path, const std::string& objectType,
+     sensorInterface = objectServer.add_interface(
+         "/xyz/openbmc_project/sensors/fan_tach/" + name,
+         "xyz.openbmc_project.Sensor.Value");
++    sensorInterface->register_property("Unit",
++        std::string("xyz.openbmc_project.Sensor.Value.Unit.RPMS"));
+ 
+     if (thresholds::hasWarningInterface(thresholds))
+     {
+-- 
+2.17.1
+

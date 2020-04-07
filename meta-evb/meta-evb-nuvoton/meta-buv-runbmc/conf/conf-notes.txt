@@ -1,2 +1,5 @@
 Common targets are:
      obmc-phosphor-image
+
+Make buv-entity image by following command:
+     MACHINE=buv-entity bitbake obmc-phosphor-image
