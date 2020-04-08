@@ -309,19 +309,19 @@
                     "Direction": "greater than",
                     "Name": "upper critical",
                     "Severity": 1,
-                    "Value": 115000
+                    "Value": 65000
                 },
                 {
                     "Direction": "greater than",
                     "Name": "upper non critical",
                     "Severity": 0,
-                    "Value": 110000
+                    "Value": 50000
                 },
                 {
                     "Direction": "less than",
                     "Name": "lower non critical",
                     "Severity": 0,
-                    "Value": 5000
+                    "Value": 15000
                 },
                 {
                     "Direction": "less than",
@@ -341,19 +341,19 @@
                     "Direction": "greater than",
                     "Name": "upper critical",
                     "Severity": 1,
-                    "Value": 115000
+                    "Value": 75000
                 },
                 {
                     "Direction": "greater than",
                     "Name": "upper non critical",
                     "Severity": 0,
-                    "Value": 110000
+                    "Value": 60000
                 },
                 {
                     "Direction": "less than",
                     "Name": "lower non critical",
                     "Severity": 0,
-                    "Value": 5000
+                    "Value": 15000
                 },
                 {
                     "Direction": "less than",
@@ -375,6 +375,64 @@
                 "power1"
             ],
             "PowerScaleFactor": 200000,
+            "Thresholds": [
+                {
+                    "Direction": "greater than",
+                    "Label": "in1",
+                    "Name": "upper critical",
+                    "Severity": 1,
+                    "Value": 12.96
+                },
+                {
+                    "Direction": "greater than",
+                    "Label": "in1",
+                    "Name": "upper non critical",
+                    "Severity": 0,
+                    "Value": 12.56
+                },
+                {
+                    "Direction": "less than",
+                    "Label": "in1",
+                    "Name": "lower non critical",
+                    "Severity": 0,
+                    "Value": 11.44
+                },
+                {
+                    "Direction": "less than",
+                    "Label": "in1",
+                    "Name": "lower critical",
+                    "Severity": 1,
+                    "Value": 11.04
+                },
+                {
+                    "Direction": "greater than",
+                    "Label": "curr1",
+                    "Name": "upper non critical",
+                    "Severity": 0,
+                    "Value": 1.5
+                },
+                {
+                    "Direction": "less than",
+                    "Label": "curr1",
+                    "Name": "lower non critical",
+                    "Severity": 0,
+                    "Value": 0
+                },
+                {
+                    "Direction": "greater than",
+                    "Label": "power1",
+                    "Name": "upper critical",
+                    "Severity": 1,
+                    "Value": 24.0
+                },
+                {
+                    "Direction": "less than",
+                    "Label": "power1",
+                    "Name": "lower critical",
+                    "Severity": 1,
+                    "Value": 0
+                }
+            ],
             "Type": "pmbus"
         },
         {
@@ -388,6 +446,50 @@
                 "power1"
             ],
             "PowerScaleFactor": 200000,
+            "Thresholds": [
+                {
+                    "Direction": "greater than",
+                    "Label": "in1",
+                    "Name": "upper critical",
+                    "Severity": 1,
+                    "Value": 3.95
+                },
+                {
+                    "Direction": "less than",
+                    "Label": "in1",
+                    "Name": "lower critical",
+                    "Severity": 1,
+                    "Value": 2.64
+                },
+                {
+                    "Direction": "greater than",
+                    "Label": "curr1",
+                    "Name": "upper non critical",
+                    "Severity": 0,
+                    "Value": 4.5
+                },
+                {
+                    "Direction": "less than",
+                    "Label": "curr1",
+                    "Name": "lower non critical",
+                    "Severity": 0,
+                    "Value": 0
+                },
+                {
+                    "Direction": "greater than",
+                    "Label": "power1",
+                    "Name": "upper critical",
+                    "Severity": 1,
+                    "Value": 12.0
+                },
+                {
+                    "Direction": "less than",
+                    "Label": "power1",
+                    "Name": "lower critical",
+                    "Severity": 1,
+                    "Value": 0
+                }
+            ],
             "Type": "pmbus"
         }
     ],

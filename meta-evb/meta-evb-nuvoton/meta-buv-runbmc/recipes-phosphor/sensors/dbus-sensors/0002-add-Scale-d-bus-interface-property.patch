@@ -103,25 +103,25 @@ index f3739c5..6c53735 100644
      {
          sensorInterface->register_property("Unit",
              std::string("xyz.openbmc_project.Sensor.Value.Unit.DegreesC"));
-+        sensorInterface->register_property("Scale", -3);
++        sensorInterface->register_property("Scale", 0);
      }
-     else if (sensorTypeName == "voltage")
+     else if (sensorTypeName == "voltage/")
      {
          sensorInterface->register_property("Unit",
              std::string("xyz.openbmc_project.Sensor.Value.Unit.Volts"));
-+        sensorInterface->register_property("Scale", -3);
++        sensorInterface->register_property("Scale", 0);
      }
-     else if (sensorTypeName == "current")
+     else if (sensorTypeName == "current/")
      {
          sensorInterface->register_property("Unit",
              std::string("xyz.openbmc_project.Sensor.Value.Unit.Amperes"));
-+        sensorInterface->register_property("Scale", -3);
++        sensorInterface->register_property("Scale", 0);
      }
-     else if (sensorTypeName == "power")
+     else if (sensorTypeName == "power/")
      {
          sensorInterface->register_property("Unit",
              std::string("xyz.openbmc_project.Sensor.Value.Unit.Watts"));
-+        sensorInterface->register_property("Scale", -6);
++        sensorInterface->register_property("Scale", 0);
      }
      if (thresholds::hasWarningInterface(thresholds))
      {
