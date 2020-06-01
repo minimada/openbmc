@@ -30,7 +30,7 @@ sudo dnf groupinstall "C Development Tools and Libraries"
 ```
 ### 2) Download the source
 ```
-git clone git@github.com:openbmc/openbmc.git
+git clone https://github.com/NTC-CCBG/openbmc.git
 cd openbmc
 ```
 
@@ -44,6 +44,7 @@ then move to the next step. Additional examples can be found in the
 
 Machine | TEMPLATECONF
 --------|---------
+Nuvoton BUV | ```meta-evb/meta-evb-nuvoton/meta-buv-runbmc/conf```
 Palmetto | ```meta-ibm/meta-palmetto/conf```
 Zaius| ```meta-ingrasys/meta-zaius/conf```
 Witherspoon| ```meta-ibm/meta-witherspoon/conf```
