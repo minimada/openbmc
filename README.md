@@ -82,7 +82,7 @@ For programming the OpenBMC to the Nuvoton BUV platform, there are two ways to u
 Or program BMC firmware via UART by following instructions:
 1. Enable BMC program mode, connect BUV J1701 pin4 and pin8
 2. usb micro usb to connect J2006
-3. Follow the [NPCM7xx_OpenBMC_Programming.pdf](https://github.com/Nuvoton-Israel/nuvoton-info/blob/master/npcm7xx-poleg/evaluation-board/sw_deliverables/NPCM7xx_OpenBMC_Programming.pdf) chapter 2.2.2 programming topic to program BMC firmware. Additionally, the step a should change to ``` python UpdateInputsBinaries_RunBMC.py ```
+3. Follow the [NPCM7xx_OpenBMC_Programming.pdf](https://github.com/Nuvoton-Israel/nuvoton-info/blob/master/npcm7xx-poleg/evaluation-board/sw_deliverables/NPCM7xx_OpenBMC_Programming.pdf) chapter 2.2.2 programming topic to program BMC firmware. Additionally, please download the igps tool version 2.1.12 from [igps](https://github.com/Nuvoton-Israel/igps)
 
 ## OpenBMC Development
 
