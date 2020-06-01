@@ -1,0 +1,11 @@
+[Unit]
+Description=IPMI SEL Logging Service
+After=olympus-reload-sensor.service
+
+[Service]
+Restart=always
+ExecStart=/usr/bin/sel-logger
+Type=simple
+
+[Install]
+WantedBy=multi-user.target

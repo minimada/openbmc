@@ -1,0 +1,78 @@
+From 5e4fade38115966e77595def1b2742b2c36255df Mon Sep 17 00:00:00 2001
+From: Joseph Liu <kwliu@nuvoton.com>
+Date: Thu, 31 Oct 2019 14:15:53 +0800
+Subject: [PATCH] add sensor evnet log support
+
+---
+ include/threshold_event_monitor.hpp | 41 +++++++++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/include/threshold_event_monitor.hpp b/include/threshold_event_monitor.hpp
+index 843d672..6284584 100644
+--- a/include/threshold_event_monitor.hpp
++++ b/include/threshold_event_monitor.hpp
+@@ -20,6 +20,10 @@
+ #include <string_view>
+ #include <variant>
+ 
++#include <phosphor-logging/elog-errors.hpp>
++#include <xyz/openbmc_project/Sensor/Threshold/error.hpp>
++#include <xyz/openbmc_project/Logging/Entry/server.hpp>
++
+ enum class thresholdEventOffsets : uint8_t
+ {
+     lowerNonCritGoingLow = 0x00,
+@@ -33,6 +37,9 @@ static constexpr const uint8_t thresholdEventDataTriggerReadingByte3 = (1 << 4);
+ 
+ static const std::string openBMCMessageRegistryVersion("0.1");
+ 
++using namespace phosphor::logging;
++using namespace sdbusplus::xyz::openbmc_project::Sensor::Threshold::Error;
++
+ inline static sdbusplus::bus::match::match startThresholdEventMonitor(
+     std::shared_ptr<sdbusplus::asio::connection> conn)
+ {
+@@ -273,6 +280,40 @@ inline static sdbusplus::bus::match::match startThresholdEventMonitor(
+             }
+         }
+ 
++        std::string InvPath(msg.get_path());
++        if (event == "CriticalLow")
++        {
++            InvPath.append("/critical_low");
++        }
++        else if (event == "WarningLow")
++        {
++            InvPath.append("/warning_low");
++        }
++        else if (event == "WarningHigh")
++        {
++            InvPath.append("/warning_high");
++        }
++        else if (event == "CriticalHigh")
++        {
++            InvPath.append("/critical_high");
++        }
++
++        std::string journalMsgE = "Sensor Alarm";
++        unsigned int transactionId = sdbusplus::server::transaction::get_id();
++        sd_journal_send("MESSAGE=%s", journalMsgE.c_str(),
++                "TRANSACTION_ID=%u", transactionId,
++                "CALLOUT_INVENTORY_PATH=%s", InvPath.c_str(),
++                "SENSOR_DATA=%lld,%lld", sensorVal, thresholdVal, NULL);
++        if (event == "CriticalLow")
++            commit<CriticalLow>();
++        else if (event == "WarningLow")
++            commit<WarningLow>();
++        else if (event == "CriticalHigh")
++            commit<CriticalHigh>();
++        else if (event == "WarningHigh")
++            commit<WarningHigh>();
++
++
+         std::string journalMsg(std::string(sensorName) + " sensor crossed a " +
+                                threshold + " threshold going " + direction +
+                                ". Reading=" + std::to_string(sensorVal) +
+-- 
+2.17.1
+

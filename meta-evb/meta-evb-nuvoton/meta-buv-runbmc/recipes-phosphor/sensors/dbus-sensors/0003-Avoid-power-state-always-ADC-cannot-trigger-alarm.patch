@@ -1,0 +1,31 @@
+From 39d4cec6e2dcd9ac70e4eefecc6b76954458c0b2 Mon Sep 17 00:00:00 2001
+From: Brian Ma <chma0@nuvoton.com>
+Date: Fri, 29 May 2020 10:51:11 +0800
+Subject: [PATCH] Avoid power state always ADC cannot trigger alarm
+
+---
+ src/ADCSensor.cpp | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/src/ADCSensor.cpp b/src/ADCSensor.cpp
+index 35490a3..569a9f4 100644
+--- a/src/ADCSensor.cpp
++++ b/src/ADCSensor.cpp
+@@ -207,6 +207,13 @@ void ADCSensor::checkThresholds(void)
+     {
+         return;
+     }
++    else if (readState == PowerState::always)
++    {
++        thresholds::checkThresholds(this);
++    }
++    else
++    {
++        thresholds::checkThresholdsPowerDelay(this, thresholdTimer);
++    }
+ 
+-    thresholds::checkThresholdsPowerDelay(this, thresholdTimer);
+ }
+-- 
+2.17.1
+

@@ -33,8 +33,10 @@ RDEPENDS_${PN}-system = " \
         obmc-console \
         dhcpcd \
         phosphor-ipmi-fru \
-        phosphor-ipmi-ipmb \
+        phosphor-sel-logger \
         phosphor-ipmi-blobs \
+        intel-ipmi-oem \
         ipmitool \
         phosphor-image-signing \
+        e2fsprogs-mke2fs \
         "
