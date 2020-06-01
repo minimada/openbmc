@@ -66,6 +66,15 @@ bitbake obmc-phosphor-image
 Additional details can be found in the [docs](https://github.com/openbmc/docs)
 repository.
 
+### 5) build images
+
+After building finished the built Images will found at: <OpenBMC_folder>/build/tmp/deploy/images/buv-runbmc/ The relevant images to use to upload the OpenBMC on the Nuvoton BUV are:
+
+1. image-bmc - The entire 64MB image including BootBlock, u-boot, linux kernel and file system, can be programmed into the beginning of flash
+2. image-u-boot - Includes only BootBlock and u-boot and their headers can be programmed into the beginning of flash
+3. image-kernel - FIT image that includes linux kernel, device tree and an initial file system, can be loaded to the linux area in flash
+4. image-rofs - Main (and large) OpenBMC file system, can be loaded to the rofs area in flash
+
 ## OpenBMC Development
 
 The OpenBMC community maintains a set of tutorials new users can go through
