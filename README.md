@@ -75,6 +75,10 @@ After building finished the built Images will found at: <OpenBMC_folder>/build/t
 3. image-kernel - FIT image that includes linux kernel, device tree and an initial file system, can be loaded to the linux area in flash
 4. image-rofs - Main (and large) OpenBMC file system, can be loaded to the rofs area in flash
 
+### 6) Programming the images
+
+For programming the OpenBMC to the Nuvoton BUV platform, there are two ways to update BMC firmware. First, update BMC firmware image via OpenBMC web interface or RESTful API. Second, flash image via UART. In normal case we suggest user use the first method to update BMC firmware. User can follow the [firmware update readme](https://github.com/Nuvoton-Israel/openbmc/tree/runbmc/meta-quanta/meta-olympus-nuvoton#bmc-firmware-update) to upgrade BMC firmware.
+
 ## OpenBMC Development
 
 The OpenBMC community maintains a set of tutorials new users can go through
