@@ -94,6 +94,12 @@ buv-runbmc login:root
 Password: 0penBmc (first letter zero and not capital o)
 ```
 
+### 8) Enabled features
+
+[Olympus RunBMC Platform](https://github.com/Nuvoton-Israel/openbmc/tree/runbmc/meta-quanta/meta-olympus-nuvoton)
+
+[BUV RunBMC Platform](https://github.com/NTC-CCBG/openbmc/tree/buv-dev/meta-evb/meta-evb-nuvoton/meta-buv-runbmc)
+
 ## OpenBMC Development
 
 The OpenBMC community maintains a set of tutorials new users can go through
