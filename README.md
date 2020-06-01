@@ -84,6 +84,16 @@ Or program BMC firmware via UART by following instructions:
 2. usb micro usb to connect J2006
 3. Follow the [NPCM7xx_OpenBMC_Programming.pdf](https://github.com/Nuvoton-Israel/nuvoton-info/blob/master/npcm7xx-poleg/evaluation-board/sw_deliverables/NPCM7xx_OpenBMC_Programming.pdf) chapter 2.2.2 programming topic to program BMC firmware. Additionally, please download the igps tool version 2.1.12 from [IGPS](https://github.com/Nuvoton-Israel/igps)
 
+### 7) OpenBMC user login
+
+After the OpenBMC boot please enter the following login and password:
+```
+Phosphor OpenBMC (Phosphor OpenBMC Project Reference Distro) 0.1.0 buv-runbmc ttyS0
+
+buv-runbmc login:root
+Password: 0penBmc (first letter zero and not capital o)
+```
+
 ## OpenBMC Development
 
 The OpenBMC community maintains a set of tutorials new users can go through
