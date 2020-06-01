@@ -79,6 +79,11 @@ After building finished the built Images will found at: <OpenBMC_folder>/build/t
 
 For programming the OpenBMC to the Nuvoton BUV platform, there are two ways to update BMC firmware. First, update BMC firmware image via OpenBMC web interface or RESTful API. Second, flash image via UART. In normal case we suggest user use the first method to update BMC firmware. User can follow the [firmware update readme](https://github.com/Nuvoton-Israel/openbmc/tree/runbmc/meta-quanta/meta-olympus-nuvoton#bmc-firmware-update) to upgrade BMC firmware.
 
+Or program BMC firmware via UART by following instructions:
+1. Enable BMC program mode, connect BUV J1701 pin4 and pin8
+2. usb micro usb to connect J2006
+3. Follow the [NPCM7xx_OpenBMC_Programming.pdf](https://github.com/Nuvoton-Israel/nuvoton-info/blob/master/npcm7xx-poleg/evaluation-board/sw_deliverables/NPCM7xx_OpenBMC_Programming.pdf) chapter 2.2.2 programming topic to program BMC firmware. Additionally, the step a should change to ``` python UpdateInputsBinaries_RunBMC.py ```
+
 ## OpenBMC Development
 
 The OpenBMC community maintains a set of tutorials new users can go through
