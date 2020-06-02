@@ -43,7 +43,7 @@ Please submit any patches against the meta-runbmc-nuvoton layer to the maintaine
 
 - [Dependencies](#dependencies)
 - [Contacts for Patches](#contacts-for-patches)
-- [rework for buv](#rework-for-buv)
+- [Rework for buv](#rework-for-buv)
 - [Features of NPCM750 RunBMC Olympus](#features-of-npcm750-runbmc-olympus)
   * [WebUI](#webui)
     + [iKVM](#ikvm)
