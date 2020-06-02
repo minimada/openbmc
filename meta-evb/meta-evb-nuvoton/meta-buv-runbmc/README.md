@@ -1,5 +1,5 @@
-# NPCM750 RunBMC Olympus
-This is the Nuvoton RunBMC Olympus System layer.
+# NPCM750 RunBMC BUV
+This is the Nuvoton RunBMC System layer.
 The NPCM750 is an ARM based SoC with external DDR RAM and
 supports a large set of peripherals made by Nuvoton.
 More information about the NPCM7XX can be found
@@ -13,8 +13,8 @@ More information about the NPCM7XX can be found
 This layer depends on:
 
 ```
-  URI: git@github.com:Nuvoton-Israel/openbmc
-  branch: runbmc
+  URI: github.com/NTC-CCBG/openbmc.git
+  branch: buv-dev
 ```
 
 # Contacts for Patches
