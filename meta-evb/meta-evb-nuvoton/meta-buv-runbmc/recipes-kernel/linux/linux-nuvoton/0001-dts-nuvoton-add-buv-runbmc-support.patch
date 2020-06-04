@@ -589,25 +589,25 @@ index 000000000000..604d9c41d169
 +				status = "okay";
 +				fan@0 {
 +					reg = <0x00>;
-+					fan-tach-ch = /bits/ 8 <0x00 0x01>;
++					fan-tach-ch = /bits/ 8 <0x00>;
 +					cooling-levels = <127 255>;
 +					fan_filter_en;
 +				};
 +				fan@1 {
 +					reg = <0x01>;
-+					fan-tach-ch = /bits/ 8 <0x02 0x03>;
++					fan-tach-ch = /bits/ 8 <0x01>;
 +					cooling-levels = /bits/ 8 <127 255>;
 +					fan_filter_en;
 +				};
 +				fan@2 {
 +					reg = <0x02>;
-+					fan-tach-ch = /bits/ 8 <0x04 0x05>;
++					fan-tach-ch = /bits/ 8 <0x02>;
 +					cooling-levels = /bits/ 8 <127 255>;
 +					fan_filter_en;
 +				};
 +				fan@3 {
 +					reg = <0x03>;
-+					fan-tach-ch = /bits/ 8 <0x06 0x07>;
++					fan-tach-ch = /bits/ 8 <0x03>;
 +					cooling-levels = /bits/ 8 <127 255>;
 +				};
 +			};
