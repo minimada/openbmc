@@ -1,0 +1,81 @@
+From 85c7e7aa7d362d9e985511f899feef23d8cf4a84 Mon Sep 17 00:00:00 2001
+From: Brian Ma <chma0@nuvoton.com>
+Date: Thu, 4 Jun 2020 14:48:50 +0800
+Subject: [PATCH] wait mapper for avoid failed to find log
+
+---
+ service_files/xyz.openbmc_project.adcsensor.service       | 2 ++
+ service_files/xyz.openbmc_project.cpusensor.service       | 2 ++
+ service_files/xyz.openbmc_project.fansensor.service       | 2 ++
+ service_files/xyz.openbmc_project.hwmontempsensor.service | 2 ++
+ service_files/xyz.openbmc_project.psusensor.service       | 2 ++
+ 5 files changed, 10 insertions(+)
+
+diff --git a/service_files/xyz.openbmc_project.adcsensor.service b/service_files/xyz.openbmc_project.adcsensor.service
+index 6ca7049..783dd29 100644
+--- a/service_files/xyz.openbmc_project.adcsensor.service
++++ b/service_files/xyz.openbmc_project.adcsensor.service
+@@ -4,6 +4,8 @@ StopWhenUnneeded=false
+ Before=xyz.openbmc_project.cpusensor.service
+ Requires=xyz.openbmc_project.EntityManager.service
+ After=xyz.openbmc_project.EntityManager.service
++Wants=mapper-wait@-xyz-openbmc_project-inventory-system-board-BUV_RUNBMC_NUVOTON.service
++After=mapper-wait@-xyz-openbmc_project-inventory-system-board-BUV_RUNBMC_NUVOTON.service
+ 
+ [Service]
+ Restart=always
+diff --git a/service_files/xyz.openbmc_project.cpusensor.service b/service_files/xyz.openbmc_project.cpusensor.service
+index 31b7bbd..f5796d1 100644
+--- a/service_files/xyz.openbmc_project.cpusensor.service
++++ b/service_files/xyz.openbmc_project.cpusensor.service
+@@ -3,6 +3,8 @@ Description=CPU Sensor
+ StopWhenUnneeded=false
+ Requires=xyz.openbmc_project.EntityManager.service
+ After=xyz.openbmc_project.EntityManager.service
++Wants=mapper-wait@-xyz-openbmc_project-inventory-system-board-BUV_RUNBMC_NUVOTON.service
++After=mapper-wait@-xyz-openbmc_project-inventory-system-board-BUV_RUNBMC_NUVOTON.service
+ 
+ [Service]
+ Restart=always
+diff --git a/service_files/xyz.openbmc_project.fansensor.service b/service_files/xyz.openbmc_project.fansensor.service
+index f452ebf..593b1f1 100644
+--- a/service_files/xyz.openbmc_project.fansensor.service
++++ b/service_files/xyz.openbmc_project.fansensor.service
+@@ -3,6 +3,8 @@ Description=Fan Sensor
+ StopWhenUnneeded=false
+ Requires=xyz.openbmc_project.EntityManager.service
+ After=xyz.openbmc_project.EntityManager.service
++Wants=mapper-wait@-xyz-openbmc_project-inventory-system-board-BUV_RUNBMC_NUVOTON.service
++After=mapper-wait@-xyz-openbmc_project-inventory-system-board-BUV_RUNBMC_NUVOTON.service
+ 
+ [Service]
+ Restart=always
+diff --git a/service_files/xyz.openbmc_project.hwmontempsensor.service b/service_files/xyz.openbmc_project.hwmontempsensor.service
+index 9513ac3..dfd637c 100644
+--- a/service_files/xyz.openbmc_project.hwmontempsensor.service
++++ b/service_files/xyz.openbmc_project.hwmontempsensor.service
+@@ -3,6 +3,8 @@ Description=Hwmon Temp Sensor
+ StopWhenUnneeded=false
+ Requires=xyz.openbmc_project.EntityManager.service
+ After=xyz.openbmc_project.EntityManager.service
++Wants=mapper-wait@-xyz-openbmc_project-inventory-system-board-BUV_RUNBMC_NUVOTON.service
++After=mapper-wait@-xyz-openbmc_project-inventory-system-board-BUV_RUNBMC_NUVOTON.service
+ 
+ [Service]
+ Restart=always
+diff --git a/service_files/xyz.openbmc_project.psusensor.service b/service_files/xyz.openbmc_project.psusensor.service
+index 4b22e8c..8dacae6 100644
+--- a/service_files/xyz.openbmc_project.psusensor.service
++++ b/service_files/xyz.openbmc_project.psusensor.service
+@@ -3,6 +3,8 @@ Description=PSU Sensor
+ StopWhenUnneeded=false
+ Requires=xyz.openbmc_project.EntityManager.service
+ After=xyz.openbmc_project.EntityManager.service
++Wants=mapper-wait@-xyz-openbmc_project-inventory-system-board-BUV_RUNBMC_NUVOTON.service
++After=mapper-wait@-xyz-openbmc_project-inventory-system-board-BUV_RUNBMC_NUVOTON.service
+ 
+ [Service]
+ Restart=always
+-- 
+2.17.1
+
