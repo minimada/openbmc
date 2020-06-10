@@ -20,7 +20,7 @@ index 8f9cb6e..09f2421 100644
      static constexpr size_t warnAfterErrorCount = 10;
      static constexpr double maxReading = 127;
      static constexpr double minReading = -128;
-+    static constexpr double Scale = 0;
++    static constexpr int64_t Scale = 0;
      static constexpr const char* labelTcontrol = "Tcontrol";
  
    private:
@@ -32,7 +32,7 @@ index 21131b8..c15c0e1 100644
  static constexpr double roundFactor = 10000; // 3 decimal places
  static constexpr double maxReading = 20;
  static constexpr double minReading = 0;
-+static constexpr double Scale = 0;
++static constexpr int64_t Scale = 0;
  
  ADCSensor::ADCSensor(const std::string& path,
                       sdbusplus::asio::object_server& objectServer,
@@ -64,7 +64,7 @@ index 305f9e1..74dab30 100644
  
  static constexpr double maxReading = 127;
  static constexpr double minReading = -128;
-+static constexpr double Scale = 0;
++static constexpr int64_t Scale = 0;
  
  HwmonTempSensor::HwmonTempSensor(
      const std::string& path, const std::string& objectType,
