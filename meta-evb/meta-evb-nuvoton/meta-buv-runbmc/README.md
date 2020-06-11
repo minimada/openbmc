@@ -31,13 +31,7 @@ Please submit any patches against the meta-runbmc-nuvoton layer to the maintaine
 
 # Rework for buv
 
-1. Runbmc card work on buv board :remove R206 0k ohm and short R422 for control GPIO09 to set 7 segment display and avoid reset U23
-2. Secure boot : Make a jumper to Connect 2.2k ohm on R108 when enable secure boot
-3. Nist: 
-  -	remove runbmc R175
-  -	mount 0k ohm on R186
-  -	make a jumper wire to connect R186(runbmc) and BUV J705 pin 7
-4. add R722 66ohm for led E2
+- reference with [Rework for buv](https://github.com/NTC-CCBG/openbmc/tree/buv-dev/meta-evb/meta-evb-nuvoton/meta-buv-runbmc/REWORK.md)
 
 # Table of Contents
 
