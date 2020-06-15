@@ -387,6 +387,9 @@
                 "power1"
             ],
             "PowerScaleFactor": 200000,
+            "power1_Max": 300.0,
+            "in1_Max": 20.0,
+            "curr1_Max": 25.0,
             "Thresholds": [
                 {
                     "Direction": "greater than",
@@ -458,6 +461,9 @@
                 "power1"
             ],
             "PowerScaleFactor": 200000,
+            "power1_Max": 300.0,
+            "in1_Max": 20.0,
+            "curr1_Max": 100.0,
             "Thresholds": [
                 {
                     "Direction": "greater than",
