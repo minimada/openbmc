@@ -2,6 +2,8 @@
     "Exposes": [
         {
             "Index": 0,
+            "EntityId": 23,
+            "EntityInstance": 1,
             "Name": "ADC1",
             "PowerState": "Always",
             "ScaleFactor": 1,
@@ -35,6 +37,8 @@
         },
         {
             "Index": 1,
+            "EntityId": 23,
+            "EntityInstance": 2,
             "Name": "ADC2",
             "PowerState": "Always",
             "ScaleFactor": 1,
@@ -68,6 +72,8 @@
         },
         {
             "Index": 2,
+            "EntityId": 23,
+            "EntityInstance": 3,
             "Name": "ADC3",
             "PowerState": "Always",
             "ScaleFactor": 1,
@@ -101,6 +107,8 @@
         },
         {
             "Index": 3,
+            "EntityId": 23,
+            "EntityInstance": 4,
             "Name": "ADC4",
             "PowerState": "Always",
             "ScaleFactor": 1,
@@ -134,6 +142,8 @@
         },
         {
             "Index": 4,
+            "EntityId": 23,
+            "EntityInstance": 5,
             "Name": "ADC5",
             "PowerState": "Always",
             "ScaleFactor": 1,
@@ -167,6 +177,8 @@
         },
         {
             "Index": 5,
+            "EntityId": 23,
+            "EntityInstance": 6,
             "Name": "ADC6",
             "PowerState": "Always",
             "ScaleFactor": 1,
@@ -200,6 +212,8 @@
         },
         {
             "Index": 6,
+            "EntityId": 23,
+            "EntityInstance": 7,
             "Name": "ADC7",
             "PowerState": "Always",
             "ScaleFactor": 1,
@@ -233,6 +247,8 @@
         },
         {
             "Index": 7,
+            "EntityId": 23,
+            "EntityInstance": 8,
             "Name": "ADC8",
             "PowerState": "Always",
             "ScaleFactor": 1,
@@ -274,6 +290,8 @@
             },
             "Index": 0,
             "Name": "Fan1",
+            "EntityId": 29,
+            "EntityInstance": 1,
             "Type": "NuvotonFan"
         },
         {
@@ -286,6 +304,8 @@
             },
             "Index": 1,
             "Name": "Fan2",
+            "EntityId": 29,
+            "EntityInstance": 2,
             "Type": "NuvotonFan"
         },
         {
@@ -298,6 +318,8 @@
             },
             "Index": 2,
             "Name": "Fan3",
+            "EntityId": 29,
+            "EntityInstance": 3,
             "Type": "NuvotonFan"
         },
         {
@@ -310,11 +332,15 @@
             },
             "Index": 3,
             "Name": "Fan4",
+            "EntityId": 29,
+            "EntityInstance": 4,
             "Type": "NuvotonFan"
         },
         {
             "Address": "0x48",
             "Bus": 12,
+            "EntityId": 7,
+            "EntityInstance": 3,
             "Name": "Outlet_Temp",
             "Thresholds": [
                 {
@@ -347,6 +373,8 @@
         {
             "Address": "0x4A",
             "Bus": 13,
+            "EntityId": 7,
+            "EntityInstance": 2,
             "Name": "BMC_Temp",
             "Thresholds": [
                 {
@@ -379,6 +407,8 @@
         {
             "Address": "0x40",
             "Bus": 11,
+            "EntityId": 19,
+            "EntityInstance": 1,
             "Name": "MB_P12V_INA219",
             "CurrScaleFactor": 200,
             "Labels": [
@@ -453,6 +483,8 @@
         {
             "Address": "0x41",
             "Bus": 11,
+            "EntityId": 19,
+            "EntityInstance": 2,
             "Name": "MB_P3V_INA219",
             "CurrScaleFactor": 200,
             "Labels": [
@@ -520,6 +552,8 @@
             "Inputs": [
                 "Fan1", "Fan2"
             ],
+            "EntityId": 30,
+            "EntityInstance": 1,
             "Name": "Fan1_2",
             "OutLimitMax": 100.0,
             "OutLimitMin": 10.0,
@@ -544,6 +578,8 @@
             "Inputs": [
                 "Fan3", "Fan4"
             ],
+            "EntityId": 30,
+            "EntityInstance": 2,
             "Name": "Fan3_4",
             "OutLimitMax": 100.0,
             "OutLimitMin": 10.0,
@@ -561,12 +597,16 @@
         {
             "FailSafePercent": 100,
             "MinThermalOutput": 10,
+            "EntityId": 30,
+            "EntityInstance": 3,
             "Name": "Zone1",
             "Type": "Pid.Zone"
         },
         {
             "FailSafePercent": 100,
             "MinThermalOutput": 0,
+            "EntityId": 30,
+            "EntityInstance": 4,
             "Name": "Zone2",
             "Type": "Pid.Zone"
         },
@@ -575,6 +615,8 @@
             "Inputs": [
                 "Outlet_Temp"
             ],
+            "EntityId": 30,
+            "EntityInstance": 5,
             "Name": "MB_OUTLET_TEMP_STP",
             "NegativeHysteresis": 0,
             "Output": [
@@ -624,6 +666,8 @@
             "Inputs": [
                 "BMC_Temp"
             ],
+            "EntityId": 30,
+            "EntityInstance": 6,
             "Name": "BMC_TEMP_STP",
             "NegativeHysteresis": 0,
             "Output": [
@@ -671,5 +715,13 @@
     ],
     "Name": "BUV_RUNBMC_NUVOTON",
     "Probe": "xyz.openbmc_project.FruDevice({'BOARD_PRODUCT_NAME': 'F0B-BMC-BMC'})",
-    "Type": "Board"
+    "Type": "Board",
+    "xyz.openbmc_project.Inventory.Decorator.Ipmi": {
+        "EntityId": 7,
+        "EntityInstance": 1
+    },
+    "xyz.openbmc_project.Inventory.Item.Bmc": {},
+    "xyz.openbmc_project.Common.UUID": {
+        "UUID": "$BOARD_INFO_AM1"
+    }
 }
