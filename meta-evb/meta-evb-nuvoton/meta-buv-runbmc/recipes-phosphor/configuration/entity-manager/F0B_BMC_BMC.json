@@ -550,15 +550,15 @@
             "ILimitMax": 0.0,
             "ILimitMin": 0.0,
             "Inputs": [
-                "Fan1", "Fan2"
+                "Fan1"
             ],
             "EntityId": 30,
             "EntityInstance": 1,
-            "Name": "Fan1_2",
+            "Name": "PID1",
             "OutLimitMax": 100.0,
             "OutLimitMin": 10.0,
             "Outputs": [
-                "Pwm_1", "Pwm_2"
+                "Pwm_1"
             ],
             "PCoefficient": 0.0,
             "SlewNeg": 0.0,
@@ -576,15 +576,41 @@
             "ILimitMax": 0.0,
             "ILimitMin": 0.0,
             "Inputs": [
-                "Fan3", "Fan4"
+                "Fan3"
             ],
             "EntityId": 30,
-            "EntityInstance": 2,
-            "Name": "Fan3_4",
+            "EntityInstance": 3,
+            "Name": "PID3",
             "OutLimitMax": 100.0,
             "OutLimitMin": 10.0,
             "Outputs": [
-                "Pwm_3", "Pwm_4"
+                "Pwm_3"
+            ],
+            "PCoefficient": 0.0,
+            "SlewNeg": 0.0,
+            "SlewPos": 0.0,
+            "Type": "Pid",
+            "Zones": [
+                "Zone3"
+            ]
+        },
+        {
+            "Class": "fan",
+            "FFGainCoefficient": 1.0,
+            "FFOffCoefficient": 0.0,
+            "ICoefficient": 0.0,
+            "ILimitMax": 0.0,
+            "ILimitMin": 0.0,
+            "Inputs": [
+                "Fan2"
+            ],
+            "EntityId": 30,
+            "EntityInstance": 2,
+            "Name": "PID2",
+            "OutLimitMax": 100.0,
+            "OutLimitMin": 10.0,
+            "Outputs": [
+                "Pwm_2"
             ],
             "PCoefficient": 0.0,
             "SlewNeg": 0.0,
@@ -595,10 +621,36 @@
             ]
         },
         {
+            "Class": "fan",
+            "FFGainCoefficient": 1.0,
+            "FFOffCoefficient": 0.0,
+            "ICoefficient": 0.0,
+            "ILimitMax": 0.0,
+            "ILimitMin": 0.0,
+            "Inputs": [
+                "Fan4"
+            ],
+            "EntityId": 30,
+            "EntityInstance": 4,
+            "Name": "PID4",
+            "OutLimitMax": 100.0,
+            "OutLimitMin": 10.0,
+            "Outputs": [
+                "Pwm_4"
+            ],
+            "PCoefficient": 0.0,
+            "SlewNeg": 0.0,
+            "SlewPos": 0.0,
+            "Type": "Pid",
+            "Zones": [
+                "Zone4"
+            ]
+        },
+        {
             "FailSafePercent": 100,
             "MinThermalOutput": 10,
             "EntityId": 30,
-            "EntityInstance": 3,
+            "EntityInstance": 5,
             "Name": "Zone1",
             "Type": "Pid.Zone"
         },
@@ -606,8 +658,24 @@
             "FailSafePercent": 100,
             "MinThermalOutput": 0,
             "EntityId": 30,
-            "EntityInstance": 4,
+            "EntityInstance": 6,
             "Name": "Zone2",
+            "Type": "Pid.Zone"
+        },
+        {
+            "FailSafePercent": 100,
+            "MinThermalOutput": 0,
+            "EntityId": 30,
+            "EntityInstance": 7,
+            "Name": "Zone3",
+            "Type": "Pid.Zone"
+        },
+        {
+            "FailSafePercent": 100,
+            "MinThermalOutput": 0,
+            "EntityId": 30,
+            "EntityInstance": 8,
+            "Name": "Zone4",
             "Type": "Pid.Zone"
         },
         {
@@ -616,7 +684,7 @@
                 "Outlet_Temp"
             ],
             "EntityId": 30,
-            "EntityInstance": 5,
+            "EntityInstance": 9,
             "Name": "MB_OUTLET_TEMP_STP",
             "NegativeHysteresis": 0,
             "Output": [
@@ -658,7 +726,7 @@
             ],
             "Type": "Stepwise",
             "Zones": [
-                "Zone1"
+                "Zone1", "Zone2"
             ]
         },
         {
@@ -667,7 +735,7 @@
                 "BMC_Temp"
             ],
             "EntityId": 30,
-            "EntityInstance": 6,
+            "EntityInstance": 10,
             "Name": "BMC_TEMP_STP",
             "NegativeHysteresis": 0,
             "Output": [
@@ -709,7 +777,7 @@
             ],
             "Type": "Stepwise",
             "Zones": [
-                "Zone2"
+                "Zone3", "Zone4"
             ]
         }
     ],
