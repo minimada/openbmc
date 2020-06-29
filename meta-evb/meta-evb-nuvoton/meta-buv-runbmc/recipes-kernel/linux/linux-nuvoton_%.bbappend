@@ -12,4 +12,6 @@ SRC_URI_append = " \
   file://0002-move_emc_message_debug.patch \
   file://0003-Revert-mtd-spi-nor-fix-options-for-mx66l51235f.patch \
   file://0004-extend-rofs-for-64MB-SPI.patch \
+  file://0005-add-seven_seg_gpio.patch \
+  file://0006-misc-Character-device-driver.patch \
   "
