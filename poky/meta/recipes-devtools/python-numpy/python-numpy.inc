@@ -7,17 +7,14 @@ SRCNAME = "numpy"
 
 SRC_URI = "https://github.com/${SRCNAME}/${SRCNAME}/releases/download/v${PV}/${SRCNAME}-${PV}.tar.gz \
            file://0001-Don-t-search-usr-and-so-on-for-libraries-by-default-.patch \
-           file://0001-npy_cpu-Add-riscv-support.patch \
-           file://0001-numpy-random-setup.py-remove-the-detection-of-x86-ta.patch \
+           file://0001-convert-shebang-from-python-to-python3.patch \
            "
-SRC_URI[md5sum] = "c48b2ad785f82cdfe28c907ce35e2a71"
-SRC_URI[sha256sum] = "47b7b6145e7ba5918ce26be25999b6d4b35cf9fbfdf46b7da50090ffdb020445"
+SRC_URI[sha256sum] = "2c095bd1c5290966cceee8b6ef5cd66f13cd0e9d6d0e8d6fc8961abd64a8e51f"
 
 UPSTREAM_CHECK_URI = "https://github.com/numpy/numpy/releases"
 UPSTREAM_CHECK_REGEX = "(?P<pver>\d+(\.\d+)+)\.tar"
 
-# Needed for building with gcc 4.x from centos 7
-CFLAGS_append_class-native = " -std=c99"
+DEPENDS += "python3-cython-native"
 
 S = "${WORKDIR}/numpy-${PV}"
 

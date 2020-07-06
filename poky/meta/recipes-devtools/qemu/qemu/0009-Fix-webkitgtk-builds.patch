@@ -1,4 +1,4 @@
-From b633b9a1813fcd715dce44659a89293f1c64ae8c Mon Sep 17 00:00:00 2001
+From 815c97ba0de02da9dace3fcfcbdf9b20e029f0d7 Mon Sep 17 00:00:00 2001
 From: Martin Jansa <martin.jansa@lge.com>
 Date: Fri, 1 Jun 2018 08:41:07 +0000
 Subject: [PATCH] Fix webkitgtk builds
@@ -18,6 +18,9 @@ This reverts commit ebf9a3630c911d0cfc9c20f7cafe9ba4f88cf583.
 
 Upstream-Status: Pending
 Signed-off-by: Alistair Francis <alistair.francis@wdc.com>
+
+[update patch context]
+Signed-off-by: Sakib Sajal <sakib.sajal@windriver.com>
 ---
  include/exec/cpu-all.h  |  6 +-----
  include/exec/cpu_ldst.h |  5 ++++-
@@ -26,7 +29,7 @@ Signed-off-by: Alistair Francis <alistair.francis@wdc.com>
  4 files changed, 10 insertions(+), 23 deletions(-)
 
 diff --git a/include/exec/cpu-all.h b/include/exec/cpu-all.h
-index 536ea58f81..4c63a6a2e4 100644
+index 49384bb6..93b12519 100644
 --- a/include/exec/cpu-all.h
 +++ b/include/exec/cpu-all.h
 @@ -162,12 +162,8 @@ extern unsigned long guest_base;
@@ -44,10 +47,10 @@ index 536ea58f81..4c63a6a2e4 100644
  
  #include "exec/hwaddr.h"
 diff --git a/include/exec/cpu_ldst.h b/include/exec/cpu_ldst.h
-index 9151fdb042..cb2b8f329f 100644
+index 53de1975..cf19ed2e 100644
 --- a/include/exec/cpu_ldst.h
 +++ b/include/exec/cpu_ldst.h
-@@ -65,7 +65,10 @@ typedef uint64_t abi_ptr;
+@@ -70,7 +70,10 @@ typedef uint64_t abi_ptr;
  #if HOST_LONG_BITS <= TARGET_VIRT_ADDR_SPACE_BITS
  #define guest_addr_valid(x) (1)
  #else
@@ -60,10 +63,10 @@ index 9151fdb042..cb2b8f329f 100644
  #define h2g_valid(x) guest_addr_valid((unsigned long)(x) - guest_base)
  
 diff --git a/linux-user/mmap.c b/linux-user/mmap.c
-index 46a6e3a761..7735465462 100644
+index e3780337..1d4aba95 100644
 --- a/linux-user/mmap.c
 +++ b/linux-user/mmap.c
-@@ -78,7 +78,7 @@ int target_mprotect(abi_ulong start, abi_ulong len, int prot)
+@@ -71,7 +71,7 @@ int target_mprotect(abi_ulong start, abi_ulong len, int prot)
          return -TARGET_EINVAL;
      len = TARGET_PAGE_ALIGN(len);
      end = start + len;
@@ -72,7 +75,7 @@ index 46a6e3a761..7735465462 100644
          return -TARGET_ENOMEM;
      }
      prot &= PROT_READ | PROT_WRITE | PROT_EXEC;
-@@ -495,8 +495,8 @@ abi_long target_mmap(abi_ulong start, abi_ulong len, int prot,
+@@ -467,8 +467,8 @@ abi_long target_mmap(abi_ulong start, abi_ulong len, int prot,
           * It can fail only on 64-bit host with 32-bit target.
           * On any other target/host host mmap() handles this error correctly.
           */
@@ -83,7 +86,7 @@ index 46a6e3a761..7735465462 100644
              goto fail;
          }
  
-@@ -636,10 +636,8 @@ int target_munmap(abi_ulong start, abi_ulong len)
+@@ -604,10 +604,8 @@ int target_munmap(abi_ulong start, abi_ulong len)
      if (start & ~TARGET_PAGE_MASK)
          return -TARGET_EINVAL;
      len = TARGET_PAGE_ALIGN(len);
@@ -95,7 +98,7 @@ index 46a6e3a761..7735465462 100644
      mmap_lock();
      end = start + len;
      real_start = start & qemu_host_page_mask;
-@@ -694,13 +692,6 @@ abi_long target_mremap(abi_ulong old_addr, abi_ulong old_size,
+@@ -662,13 +660,6 @@ abi_long target_mremap(abi_ulong old_addr, abi_ulong old_size,
      int prot;
      void *host_addr;
  
@@ -110,10 +113,10 @@ index 46a6e3a761..7735465462 100644
  
      if (flags & MREMAP_FIXED) {
 diff --git a/linux-user/syscall.c b/linux-user/syscall.c
-index 8b41a03901..bc5d85de02 100644
+index 05f03919..d6f8cc97 100644
 --- a/linux-user/syscall.c
 +++ b/linux-user/syscall.c
-@@ -4031,9 +4031,6 @@ static inline abi_ulong do_shmat(CPUArchState *cpu_env,
+@@ -4287,9 +4287,6 @@ static inline abi_ulong do_shmat(CPUArchState *cpu_env,
              return -TARGET_EINVAL;
          }
      }
@@ -123,15 +126,15 @@ index 8b41a03901..bc5d85de02 100644
  
      mmap_lock();
  
-@@ -6881,7 +6878,7 @@ static int open_self_maps(void *cpu_env, int fd)
-         }
-         if (h2g_valid(min)) {
-             int flags = page_get_flags(h2g(min));
--            max = h2g_valid(max - 1) ? max : (uintptr_t)g2h(GUEST_ADDR_MAX) + 1;
-+            max = h2g_valid(max - 1) ? max : (uintptr_t)g2h(GUEST_ADDR_MAX);
+@@ -7247,7 +7244,7 @@ static int open_self_maps(void *cpu_env, int fd)
+             const char *path;
+ 
+             max = h2g_valid(max - 1) ?
+-                max : (uintptr_t) g2h(GUEST_ADDR_MAX) + 1;
++                max : (uintptr_t) g2h(GUEST_ADDR_MAX);
+ 
              if (page_check_range(h2g(min), max - min, flags) == -1) {
                  continue;
-             }
 -- 
-2.22.0
+2.24.0
 

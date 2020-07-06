@@ -7,24 +7,21 @@ LICENSE = "Apache-2.0"
 LIC_FILES_CHKSUM = "file://LICENSE;md5=e3fc50a88d0a364313df4b21ef20c29e"
 
 inherit autotools pkgconfig
-inherit pythonnative
+inherit python3native
 inherit phosphor-dbus-yaml
 
 DEPENDS += "autoconf-archive-native"
-DEPENDS += "sdbus++-native"
+DEPENDS += "${PYTHON_PN}-sdbus++-native"
 
-SRC_URI += "git://github.com/openbmc/phosphor-dbus-interfaces"
-SRCREV = "79064a8e0c49b35cfa1c343cef31f21ebfd7298d"
-
-DEPENDS_remove_class-native = "sdbus++-native"
-DEPENDS_remove_class-nativesdk = "sdbus++-native"
+SRC_URI = "git://github.com/openbmc/phosphor-dbus-interfaces"
+SRCREV = "39ceb2fbae7ffb72a013612f45aa827c1d16d101"
 
 PACKAGECONFIG ??= "libphosphor_dbus"
 PACKAGECONFIG[libphosphor_dbus] = " \
         --enable-libphosphor_dbus, \
         --disable-libphosphor_dbus, \
         systemd sdbusplus, \
-        libsystemd sdbusplus \
+        libsystemd \
         "
 
 PACKAGECONFIG_remove_class-native = "libphosphor_dbus"

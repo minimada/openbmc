@@ -6,7 +6,7 @@ HOMEPAGE = "https://github.com/openbmc/ibm-logging"
 LICENSE = "Apache-2.0"
 LIC_FILES_CHKSUM = "file://${S}/LICENSE;md5=86d3f3a95c324c9479bd8986968f4327"
 SRC_URI += "git://github.com/openbmc/ibm-logging"
-SRCREV = "4c0e8945f072f9139d0efb04e8f955663b972a84"
+SRCREV = "aeaa374a6fa097b2359acfc4d694ed3ebe8eecaa"
 
 inherit autotools
 inherit pkgconfig
@@ -16,10 +16,11 @@ inherit obmc-phosphor-systemd
 inherit phosphor-dbus-yaml
 
 DEPENDS += " \
-         ibm-dbus-interfaces \
-         phosphor-logging \
-         nlohmann-json \
+         ${PYTHON_PN}-pyyaml-native \
          autoconf-archive-native \
+         phosphor-dbus-interfaces \
+         nlohmann-json \
+         phosphor-logging \
          sdbusplus \
          "
 
@@ -29,6 +30,9 @@ SRC_URI += "file://policyTable.json"
 
 PACKAGECONFIG ??= ""
 PACKAGECONFIG[policy-interface] = "--enable-policy-interface, --disable-policy-interface,,"
+
+PACKAGECONFIG_ibm-ac-server = "policy-interface"
+PACKAGECONFIG_mihawk = "policy-interface"
 
 SERVICE = "com.ibm.Logging.service"
 DBUS_SERVICE_${PN} += "${SERVICE}"
@@ -55,20 +59,10 @@ do_report(){
 
     ${S}/create_error_reports.py \
         -p ${D}/${datadir}/ibm-logging/policy.json \
-        -y ${STAGING_DIR_NATIVE}${yaml_dir} \
+        -y ${STAGING_DIR_TARGET}${yaml_dir} \
         -e ${WORKDIR}/build/all_errors.json \
         -x ${WORKDIR}/build/policy_crosscheck.txt
 
 }
 
-addtask report
-
-#Collect all of the error YAML files into our recipe-sysroot-native dir.
-do_report[depends] = " \
-                     ibm-logging:do_install \
-                     phosphor-logging-error-logs-native:do_populate_sysroot \
-                     phosphor-dbus-interfaces-native:do_populate_sysroot \
-                     openpower-dbus-interfaces-native:do_populate_sysroot \
-                     openpower-occ-control-native:do_populate_sysroot  \
-                     openpower-debug-collector-native:do_populate_sysroot \
-                     "
+addtask report after do_install

@@ -8,8 +8,7 @@ SRC_URI_append_buv-runbmc = " \
     file://fan-boot-control.service \
     "
 SRC_URI_append_buv-runbmc = " \
-    ${@entity_enabled(d, 'file://pid_service.patch', \
-        'file://phosphor-pid-control.service')}"
+    ${@entity_enabled(d, '', 'file://phosphor-pid-control.service')}"
 
 FILES_${PN}_append_buv-runbmc = " ${bindir}/fan-default-speed.sh"
 FILES_${PN}_append_buv-runbmc = " \

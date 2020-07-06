@@ -1,6 +1,7 @@
 <!DOCTYPE chapter PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN"
 "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd"
 [<!ENTITY % poky SYSTEM "../poky.ent"> %poky; ] >
+<!--SPDX-License-Identifier: CC-BY-2.0-UK-->
 
 <appendix id='sdk-appendix-obtain'>
 
@@ -297,8 +298,7 @@
 
          <replaceable>arch</replaceable> is a string representing the target architecture:
                    beaglebone-yocto, beaglebone-yocto-lsb, edgerouter, edgerouter-lsb,
-                   genericx86, genericx86-64, genericx86-64-lsb, genericx86-lsb,
-                   mpc8315e-rdb, mpc8315e-rdb-lsb, and qemu*.
+                   genericx86, genericx86-64, genericx86-64-lsb, genericx86-lsb and qemu*.
 
 <!-->
          <replaceable>date_time</replaceable> is a date and time stamp.

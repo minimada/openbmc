@@ -184,6 +184,10 @@ When using device tree kernels, set this variable to enable I2C:
 
     ENABLE_I2C = "1"
 
+Furthermore, to auto-load I2C kernel modules set:
+
+    KERNEL_MODULE_AUTOLOAD_rpi += "i2c-dev i2c-bcm2708"
+
 ## Enable PiTFT support
 
 Basic support for using PiTFT screens can be enabled by adding below in
@@ -256,6 +260,18 @@ In order to use Pican2 CAN module, set the following variables:
 	ENABLE_CAN = "1"
 
 See: <http://skpang.co.uk/catalog/pican2-canbus-board-for-raspberry-pi-23-p-1475.html>
+
+## Enable infrared
+
+Users who want to enable infrared support, for example for using LIRC (Linux
+Infrared Remote Control), have to explicitly set in local.conf:
+
+    ENABLE_IR = "1"
+
+This will add device tree overlays gpio-ir and gpio-ir-tx to config.txt.
+Appropriate kernel modules will be also included in the image. By default the
+GPIO pin for gpio-ir is set to 18 and the pin for gpio-ir-tx is 17. Both pins
+can be easily changed by modifying variables `GPIO_IR` and `GPIO_IR_TX`.
 
 ## Manual additions to config.txt
 

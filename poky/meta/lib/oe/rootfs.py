@@ -126,17 +126,16 @@ class Rootfs(object, metaclass=ABCMeta):
             bb.utils.mkdirhier(self.image_rootfs + os.path.dirname(dir))
             shutil.copytree(self.image_rootfs + '-orig' + dir, self.image_rootfs + dir, symlinks=True)
 
-        cpath = oe.cachedpath.CachedPath()
         # Copy files located in /usr/lib/debug or /usr/src/debug
         for dir in ["/usr/lib/debug", "/usr/src/debug"]:
             src = self.image_rootfs + '-orig' + dir
-            if cpath.exists(src):
+            if os.path.exists(src):
                 dst = self.image_rootfs + dir
                 bb.utils.mkdirhier(os.path.dirname(dst))
                 shutil.copytree(src, dst)
 
         # Copy files with suffix '.debug' or located in '.debug' dir.
-        for root, dirs, files in cpath.walk(self.image_rootfs + '-orig'):
+        for root, dirs, files in os.walk(self.image_rootfs + '-orig'):
             relative_dir = root[len(self.image_rootfs + '-orig'):]
             for f in files:
                 if f.endswith('.debug') or '/.debug' in relative_dir:
@@ -298,7 +297,7 @@ class Rootfs(object, metaclass=ABCMeta):
 
     def _run_ldconfig(self):
         if self.d.getVar('LDCONFIGDEPEND'):
-            bb.note("Executing: ldconfig -r" + self.image_rootfs + "-c new -v")
+            bb.note("Executing: ldconfig -r " + self.image_rootfs + " -c new -v")
             self._exec_shell_cmd(['ldconfig', '-r', self.image_rootfs, '-c',
                                   'new', '-v'])
 

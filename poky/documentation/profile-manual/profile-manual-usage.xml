@@ -1,6 +1,7 @@
 <!DOCTYPE chapter PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN"
 "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd"
 [<!ENTITY % poky SYSTEM "../poky.ent"> %poky; ] >
+<!--SPDX-License-Identifier: CC-BY-2.0-UK-->
 
 <chapter id='profile-manual-usage'>
 
@@ -2182,7 +2183,7 @@
               meta-toolchain
               meta-ide-support
 
-     You can also run generated qemu images with a command like 'runqemu qemux86'
+     You can also run generated qemu images with a command like 'runqemu qemux86-64'
 
             </literallayout>
             Once you've done that, you can cd to whatever directory

@@ -6,7 +6,7 @@ PV = "1.0+git${SRCPV}"
 
 inherit autotools
 inherit pkgconfig
-inherit pythonnative
+inherit python3native
 inherit systemd
 
 # License info
@@ -17,7 +17,7 @@ LIC_FILES_CHKSUM = "file://LICENSE;md5=e3fc50a88d0a364313df4b21ef20c29e"
 DEPENDS += "\
             autoconf-archive-native \
             sdbusplus \
-            sdbusplus-native \
+            ${PYTHON_PN}-sdbus++-native \
             phosphor-dbus-interfaces \
            "
 RDEPENDS_${PN} += "obmc-console"
@@ -37,4 +37,4 @@ EXTRA_OECONF = "HOST_TTY=${OBMC_CONSOLE_HOST_TTY} \
 # Source code repository
 S = "${WORKDIR}/git"
 SRC_URI = "git://github.com/openbmc/phosphor-hostlogger"
-SRCREV = "b8cf26fe933c7f020f5195b9575f596b9cb23719"
+SRCREV = "bc5e1501408d6065dba06ff6c4f1caa83b030106"

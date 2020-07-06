@@ -4,17 +4,20 @@ LICENSE= "Apache-2.0"
 LIC_FILES_CHKSUM = "file://${S}/NOTICE;md5=fee220301a2af3faf8f211524b4248ea"
 
 SRC_URI = "git://github.com/open-power/eCMD.git"
-SRCREV = "b858b2f212bda2665ad41e821302e8196c7aec07"
+SRCREV = "79cadcd0d299cc044791da9b5e3746108290558a"
 DEPENDS += "zlib"
 
 SRC_URI += "file://croserver.service"
 
 S = "${WORKDIR}/git"
 
-inherit pythonnative
+inherit python3native
+DEPENDS += "${PYTHON_PN}-distro-native"
 
 do_configure() {
-   LD="${CXX}" ${S}/config.py --without-swig --output-root ${B} --target obj --extensions "cmd cip" --build-verbose
+   LD="${CXX}" ${PYTHON} ${S}/config.py \
+       --without-swig --output-root ${B} --target obj \
+       --extensions "cmd cip" --build-verbose
 }
 
 do_compile() {
