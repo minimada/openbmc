@@ -18,7 +18,7 @@ SRC_URI += "git://github.com/openbmc/mboxbridge.git"
 
 SRC_URI += "file://99-aspeed-lpc-ctrl.rules"
 
-SRCREV="ca5eda8032e1e0cbaeb713186262c50ae4489f7c"
+SRCREV="dfbeae251c8ebe9939c6eb7241380d8cf4313169"
 
 PROVIDES += "mboxctl"
 
@@ -39,6 +39,6 @@ SYSTEMD_SERVICE_${PN} += "mboxd.service"
 SYSTEMD_SERVICE_${PN} += "mboxd-reload@.service"
 SYSTEMD_LINK_${PN} += "${@compose_list(d, 'FMT', 'OBMC_HOST_INSTANCES')}"
 
-# Enable virtual-pnor by DISTRO_FEATURE openpower-ubi-fs.
-PACKAGECONFIG_append_df-openpower-ubi-fs = "virtual-pnor"
+# Enable virtual-pnor by DISTRO_FEATURE openpower-virtual-pnor.
+PACKAGECONFIG_append_df-openpower-virtual-pnor = " virtual-pnor"
 PACKAGECONFIG[virtual-pnor] = "--enable-virtual-pnor,--disable-virtual-pnor"

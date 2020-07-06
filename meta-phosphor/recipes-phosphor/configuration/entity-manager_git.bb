@@ -3,23 +3,24 @@ DESCRIPTION = "Entity Manager provides d-bus configuration data \
 and configures system sensors"
 
 SRC_URI = "git://github.com/openbmc/entity-manager.git"
-SRCREV = "61f5ac4a77d38a1682d61efbf90c03b5a44acc8c"
+SRCREV = "4fa1d399548e8bc40c1cbe5ffb849d8769cdfb0b"
 PV = "0.1+git${SRCPV}"
 
 LICENSE = "Apache-2.0"
 LIC_FILES_CHKSUM = "file://LICENCE;md5=a6a4edad4aed50f39a66d098d74b265b"
 
 SYSTEMD_SERVICE_${PN} = "xyz.openbmc_project.EntityManager.service \
-                         xyz.openbmc_project.FruDevice.service"
+                         ${@bb.utils.contains('DISTRO_FEATURES', 'ipmi-fru', 'xyz.openbmc_project.FruDevice.service', '', d)}"
 
 DEPENDS = "boost \
-           i2c-tools \
            nlohmann-json \
            sdbusplus \
            valijson"
 
 S = "${WORKDIR}/git/"
-inherit cmake systemd
+inherit meson systemd
 
-EXTRA_OECMAKE = "-DYOCTO=1"
+EXTRA_OEMESON = "-Dtests=disabled"
 
+PACKAGECONFIG ??= "${@bb.utils.filter('DISTRO_FEATURES', 'ipmi-fru', d)}"
+PACKAGECONFIG[ipmi-fru] = "-Dfru-device=true, -Dfru-device=false, i2c-tools,"

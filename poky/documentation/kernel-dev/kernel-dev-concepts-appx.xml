@@ -1,6 +1,7 @@
 <!DOCTYPE chapter PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN"
 "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd"
 [<!ENTITY % poky SYSTEM "../poky.ent"> %poky; ] >
+<!--SPDX-License-Identifier: CC-BY-2.0-UK-->
 
 <appendix id='kernel-dev-concepts-appx'>
 <title>Advanced Kernel Concepts</title>
@@ -543,7 +544,6 @@
      yocto-kernel-cache/features/kgdb/hardware.cfg
      yocto-kernel-cache/ktypes/base/hardware.cfg
      yocto-kernel-cache/bsp/mti-malta32/hardware.cfg
-     yocto-kernel-cache/bsp/fsl-mpc8315e-rdb/hardware.cfg
      yocto-kernel-cache/bsp/qemu-ppc32/hardware.cfg
      yocto-kernel-cache/bsp/qemuarma9/hardware.cfg
      yocto-kernel-cache/bsp/mti-malta64/hardware.cfg

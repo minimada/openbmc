@@ -403,7 +403,7 @@ class PartitionedImage():
                 # Reserve a sector for EBR for every logical partition
                 # before alignment is performed.
                 if part.type == 'logical':
-                    self.offset += 1
+                    self.offset += 2
 
             align_sectors = 0
             if part.align:
@@ -428,6 +428,21 @@ class PartitionedImage():
                     # increase the offset so we actually start the partition on right alignment
                     self.offset += align_sectors
 
+            if part.offset is not None:
+                offset = (part.offset * 1024) // self.sector_size
+
+                if offset * self.sector_size != part.offset * 1024:
+                    raise WicError("Could not place %s%s at offset %dK with sector size %d" % (part.disk, self.numpart, part.offset, self.sector_size))
+
+                delta = offset - self.offset
+                if delta < 0:
+                    raise WicError("Could not place %s%s at offset %dK: next free sector is %d (delta: %d)" % (part.disk, self.numpart, part.offset, self.offset, delta))
+
+                logger.debug("Skipping %d sectors to place %s%s at offset %dK",
+                             delta, part.disk, self.numpart, part.offset)
+
+                self.offset = offset
+
             part.start = self.offset
             self.offset += part.size_sec
 
@@ -446,7 +461,7 @@ class PartitionedImage():
                         self.extendedpart = part.num
                     else:
                         self.extended_size_sec += align_sectors
-                    self.extended_size_sec += part.size_sec + 1
+                    self.extended_size_sec += part.size_sec + 2
                 else:
                     self.primary_part_num += 1
                     part.num = self.primary_part_num
@@ -512,7 +527,7 @@ class PartitionedImage():
                 # add a sector at the back, so that there is enough
                 # room for all logical partitions.
                 self._create_partition(self.path, "extended",
-                                       None, part.start - 1,
+                                       None, part.start - 2,
                                        self.extended_size_sec)
 
             if part.fstype == "swap":
@@ -580,9 +595,7 @@ class PartitionedImage():
                                 self.native_sysroot)
 
     def cleanup(self):
-        # remove partition images
-        for image in set(self.partimages):
-            os.remove(image)
+        pass
 
     def assemble(self):
         logger.debug("Installing partitions")

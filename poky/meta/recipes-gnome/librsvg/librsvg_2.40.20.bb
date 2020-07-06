@@ -14,12 +14,13 @@ LIC_FILES_CHKSUM = "file://COPYING;md5=94d55d512a9ba36caa9b7df079bae19f \
 
 SECTION = "x11/utils"
 DEPENDS = "cairo gdk-pixbuf glib-2.0 libcroco libxml2 pango"
-BBCLASSEXTEND = "native"
+BBCLASSEXTEND = "native nativesdk"
 
 inherit gnomebase gtk-doc pixbufcache upstream-version-is-even gobject-introspection
 
 SRC_URI += "file://gtk-option.patch \
             file://0001-Auto-detect-Bsymbolic-fixes-configure-on-macOS.patch \
+            file://0001-Remove-non-reproducible-SRCDIR.patch \
 "
 
 SRC_URI[archive.md5sum] = "4949d313b0c5d9161a5c259104af5568"

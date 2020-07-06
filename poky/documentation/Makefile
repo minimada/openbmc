@@ -1,3 +1,6 @@
+#
+# SPDX-License-Identifier: CC-BY-2.0-UK
+#
 # This is a single Makefile to handle all generated Yocto Project documents,
 # which includes the BitBake User Manual and the Toaster User Manual.
 # The Makefile needs to live in the documents directory and all figures used
@@ -76,6 +79,11 @@
 # example publishes the 1.2 version of the PDF and HTML YP Development Tasks Manual
 # for the 'denzil' branch.
 #
+# IN MEMORIAM: This comment is to remember Scott Rifenbark (scottrif), whom we lost
+# in January, 2020. Scott was the primary technical writer for the Yocto Project for
+# over 9 years. In that time, he contributed many thousands of patches, built this
+# documentation tree, and enabled tens of thousands of developers to succeed with
+# embedded Linux. He ran this Makefile many thousands of times. Godspeed, Dude.
 
 ifeq ($(DOC),brief-yoctoprojectqs)
 XSLTOPTS = --stringparam html.stylesheet brief-yoctoprojectqs-style.css \
@@ -132,32 +140,10 @@ ALLPREQ = html tarball
 # This would be appropriate for "master" branch.
 #
 
-	ifeq ($(BRANCH),edison)
-TARFILES = dev-style.css dev-manual.html \
-           figures/app-dev-flow.png figures/bsp-dev-flow.png \
-           figures/dev-title.png figures/git-workflow.png \
-           figures/index-downloads.png figures/kernel-dev-flow.png \
-           figures/kernel-example-repos-edison.png \
-           figures/kernel-overview-1.png figures/kernel-overview-2.png \
-           figures/kernel-overview-3-edison.png \
-           figures/source-repos.png figures/yp-download.png \
-           figures/wip.png
-	else ifeq ($(BRANCH),denzil)
-TARFILES = dev-style.css dev-manual.html \
-           figures/app-dev-flow.png figures/bsp-dev-flow.png \
-           figures/dev-title.png figures/git-workflow.png \
-           figures/index-downloads.png figures/kernel-dev-flow.png \
-           figures/kernel-example-repos-denzil.png \
-           figures/kernel-overview-1.png figures/kernel-overview-2.png \
-           figures/kernel-overview-3-denzil.png \
-           figures/source-repos.png figures/yp-download.png \
-           figures/wip.png
-        else
 TARFILES = dev-style.css dev-manual.html figures/buildhistory-web.png \
            figures/dev-title.png figures/buildhistory.png \
            figures/recipe-workflow.png figures/bitbake-build-flow.png \
            figures/multiconfig_files.png figures/cute-files-npm-example.png
-	endif
 
 MANUALS = $(DOC)/$(DOC).html
 FIGURES = figures
@@ -173,37 +159,6 @@ XSLTOPTS = --stringparam html.stylesheet mega-style.css \
            --xinclude
 ALLPREQ = html tarball
 
-	ifeq ($(BRANCH),edison)
-TARFILES = mega-manual.html mega-style.css figures/yocto-environment.png \
-        figures/building-an-image.png  \
-	figures/using-a-pre-built-image.png \
-	figures/poky-title.png \
-	figures/adt-title.png figures/bsp-title.png \
-	figures/kernel-title.png figures/kernel-architecture-overview.png \
-	figures/app-dev-flow.png figures/bsp-dev-flow.png \
-        figures/dev-title.png figures/git-workflow.png \
-        figures/index-downloads.png figures/kernel-dev-flow.png \
-	figures/kernel-example-repos-edison.png \
-	figures/kernel-overview-1.png figures/kernel-overview-2.png \
-	figures/kernel-overview-3-edison.png \
-	figures/source-repos.png figures/yp-download.png \
-	figures/wip.png
-	else ifeq ($(BRANCH),denzil)
-TARFILES = mega-manual.html mega-style.css figures/yocto-environment.png \
-        figures/building-an-image.png  \
-	figures/using-a-pre-built-image.png \
-	figures/poky-title.png \
-	figures/adt-title.png figures/bsp-title.png \
-	figures/kernel-title.png figures/kernel-architecture-overview.png \
-	figures/app-dev-flow.png figures/bsp-dev-flow.png \
-        figures/dev-title.png figures/git-workflow.png \
-        figures/index-downloads.png figures/kernel-dev-flow.png \
-	figures/kernel-example-repos-denzil.png \
-	figures/kernel-overview-1.png figures/kernel-overview-2.png \
-	figures/kernel-overview-3-denzil.png \
-	figures/source-repos.png figures/yp-download.png \
-	figures/wip.png
-        else
 TARFILES = mega-manual.html mega-style.css \
         figures/YP-flow-diagram.png \
 	figures/using-a-pre-built-image.png \
@@ -261,7 +216,6 @@ TARFILES = mega-manual.html mega-style.css \
 	figures/sdk-devtool-upgrade-flow.png figures/bitbake-build-flow.png figures/bypqs-title.png \
 	figures/overview-manual-title.png figures/sdk-autotools-flow.png figures/sdk-makefile-flow.png \
 	figures/bb_multiconfig_files.png figures/bitbake-title.png figures/cute-files-npm-example.png
-	endif
 
 MANUALS = $(DOC)/$(DOC).html
 FIGURES = figures
@@ -350,6 +304,16 @@ STYLESHEET = $(DOC)/*.css
 endif
 
 
+ifeq ($(DOC),test-manual)
+XSLTOPTS = --xinclude
+ALLPREQ = html tarball
+TARFILES = test-manual.html test-manual-style.css \
+	   figures/test-manual-title.png figures/ab-test-cluster.png
+MANUALS = $(DOC)/$(DOC).html
+FIGURES = figures
+STYLESHEET = $(DOC)/*.css
+endif
+
 ##
 # These URI should be rewritten by your distribution's xml catalog to
 # match your locally installed XSL stylesheets.
@@ -414,8 +378,8 @@ publish:
             echo " "; \
             echo "******** Publishing "$(DOC)".html"; \
             echo " "; \
-            scp -r $(MANUALS) $(STYLESHEET) docs.yp:/var/www/www.yoctoproject.org-docs/$(VER)/$(DOC); \
-            cd $(DOC); scp -r $(FIGURES) docs.yp:/var/www/www.yoctoproject.org-docs/$(VER)/$(DOC); \
+            scp -r $(MANUALS) $(STYLESHEET) www.yoctoproject.org:/var/www/www.yoctoproject.org-docs/$(VER)/$(DOC); \
+            cd $(DOC); scp -r $(FIGURES) www.yoctoproject.org:/var/www/www.yoctoproject.org-docs/$(VER)/$(DOC); \
 	else \
           echo " "; \
           echo $(DOC)".html missing.  Generate the file first then try again."; \

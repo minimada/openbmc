@@ -7,7 +7,7 @@ PV = "1.0+git${SRCPV}"
 
 inherit autotools \
         pkgconfig \
-        pythonnative \
+        python3native \
         phosphor-dbus-yaml \
         phosphor-inventory-manager \
         obmc-phosphor-dbus-service
@@ -17,10 +17,9 @@ require phosphor-inventory-manager.inc
 DEPENDS += " \
         phosphor-inventory-manager-assettag \
         phosphor-dbus-interfaces \
-        phosphor-dbus-interfaces-native \
         phosphor-logging \
         sdbusplus \
-        sdbusplus-native \
+        ${PYTHON_PN}-sdbus++-native \
         autoconf-archive-native \
         libcereal \
         ${PYTHON_PN}-native \
@@ -40,7 +39,7 @@ EXTRA_OECONF = " \
         BUSNAME=${OBMC_INVENTORY_MGR_IFACE} \
         INVENTORY_ROOT=${OBMC_INVENTORY_PATH} \
         IFACE=${OBMC_INVENTORY_MGR_IFACE} \
-        IFACES_PATH=${STAGING_DIR_HOST}${yaml_dir} \
+        IFACES_PATH=${STAGING_DIR_TARGET}${yaml_dir} \
         "
 
 PACKAGECONFIG ??= ""

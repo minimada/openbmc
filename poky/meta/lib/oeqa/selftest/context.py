@@ -9,12 +9,13 @@ import time
 import glob
 import sys
 import importlib
-import signal
-from shutil import copyfile
+import subprocess
+import unittest
 from random import choice
 
 import oeqa
 import oe
+import bb.utils
 
 from oeqa.core.context import OETestContext, OETestContextExecutor
 from oeqa.core.exception import OEQAPreRun, OEQATestNotFound
@@ -22,12 +23,73 @@ from oeqa.core.exception import OEQAPreRun, OEQATestNotFound
 from oeqa.utils.commands import runCmd, get_bb_vars, get_test_layer
 
 class OESelftestTestContext(OETestContext):
-    def __init__(self, td=None, logger=None, machines=None, config_paths=None):
+    def __init__(self, td=None, logger=None, machines=None, config_paths=None, newbuilddir=None):
         super(OESelftestTestContext, self).__init__(td, logger)
 
         self.machines = machines
         self.custommachine = None
         self.config_paths = config_paths
+        self.newbuilddir = newbuilddir
+
+    def setup_builddir(self, suffix, selftestdir, suite):
+        builddir = os.environ['BUILDDIR']
+        if not selftestdir:
+            selftestdir = get_test_layer()
+        if self.newbuilddir:
+            newbuilddir = os.path.join(self.newbuilddir, 'build' + suffix)
+        else:
+            newbuilddir = builddir + suffix
+        newselftestdir = newbuilddir + "/meta-selftest"
+
+        if os.path.exists(newbuilddir):
+            self.logger.error("Build directory %s already exists, aborting" % newbuilddir)
+            sys.exit(1)
+
+        bb.utils.mkdirhier(newbuilddir)
+        oe.path.copytree(builddir + "/conf", newbuilddir + "/conf")
+        oe.path.copytree(builddir + "/cache", newbuilddir + "/cache")
+        oe.path.copytree(selftestdir, newselftestdir)
+
+        for e in os.environ:
+            if builddir + "/" in os.environ[e] or os.environ[e].endswith(builddir):
+                os.environ[e] = os.environ[e].replace(builddir, newbuilddir)
+
+        subprocess.check_output("git init; git add *; git commit -a -m 'initial'", cwd=newselftestdir, shell=True)
+
+        # Tried to used bitbake-layers add/remove but it requires recipe parsing and hence is too slow
+        subprocess.check_output("sed %s/conf/bblayers.conf -i -e 's#%s#%s#g'" % (newbuilddir, selftestdir, newselftestdir), cwd=newbuilddir, shell=True)
+
+        os.chdir(newbuilddir)
+
+        def patch_test(t):
+            if not hasattr(t, "tc"):
+                return
+            cp = t.tc.config_paths
+            for p in cp:
+                if selftestdir in cp[p] and newselftestdir not in cp[p]:
+                    cp[p] = cp[p].replace(selftestdir, newselftestdir)
+                if builddir in cp[p] and newbuilddir not in cp[p]:
+                    cp[p] = cp[p].replace(builddir, newbuilddir)
+
+        def patch_suite(s):
+            for x in s:
+                if isinstance(x, unittest.TestSuite):
+                    patch_suite(x)
+                else:
+                    patch_test(x)
+
+        patch_suite(suite)
+
+        return (builddir, newbuilddir)
+
+    def prepareSuite(self, suites, processes):
+        if processes:
+            from oeqa.core.utils.concurrencytest import ConcurrentTestSuite
+
+            return ConcurrentTestSuite(suites, processes, self.setup_builddir)
+        else:
+            self.setup_builddir("-st", None, suites)
+            return suites
 
     def runTests(self, processes=None, machine=None, skips=[]):
         if machine:
@@ -85,6 +147,8 @@ class OESelftestTestContextExecutor(OETestContextExecutor):
                 action='append', default=None,
                 help='Exclude all (unhidden) tests that match any of the specified tag(s). (exclude applies before select)')
 
+        parser.add_argument('-B', '--newbuilddir', help='New build directory to use for tests.')
+        parser.add_argument('-v', '--verbose', action='store_true')
         parser.set_defaults(func=self.run)
 
     def _get_available_machines(self):
@@ -135,26 +199,11 @@ class OESelftestTestContextExecutor(OETestContextExecutor):
 
         builddir = os.environ.get("BUILDDIR")
         self.tc_kwargs['init']['config_paths'] = {}
-        self.tc_kwargs['init']['config_paths']['testlayer_path'] = \
-                get_test_layer()
+        self.tc_kwargs['init']['config_paths']['testlayer_path'] = get_test_layer()
         self.tc_kwargs['init']['config_paths']['builddir'] = builddir
-        self.tc_kwargs['init']['config_paths']['localconf'] = \
-                os.path.join(builddir, "conf/local.conf")
-        self.tc_kwargs['init']['config_paths']['localconf_backup'] = \
-                os.path.join(builddir, "conf/local.conf.orig")
-        self.tc_kwargs['init']['config_paths']['localconf_class_backup'] = \
-                os.path.join(builddir, "conf/local.conf.bk")
-        self.tc_kwargs['init']['config_paths']['bblayers'] = \
-                os.path.join(builddir, "conf/bblayers.conf")
-        self.tc_kwargs['init']['config_paths']['bblayers_backup'] = \
-                os.path.join(builddir, "conf/bblayers.conf.orig")
-        self.tc_kwargs['init']['config_paths']['bblayers_class_backup'] = \
-                os.path.join(builddir, "conf/bblayers.conf.bk")
-
-        copyfile(self.tc_kwargs['init']['config_paths']['localconf'],
-                self.tc_kwargs['init']['config_paths']['localconf_backup'])
-        copyfile(self.tc_kwargs['init']['config_paths']['bblayers'], 
-                self.tc_kwargs['init']['config_paths']['bblayers_backup'])
+        self.tc_kwargs['init']['config_paths']['localconf'] = os.path.join(builddir, "conf/local.conf")
+        self.tc_kwargs['init']['config_paths']['bblayers'] = os.path.join(builddir, "conf/bblayers.conf")
+        self.tc_kwargs['init']['newbuilddir'] = args.newbuilddir
 
         def tag_filter(tags):
             if args.exclude_tags:
@@ -279,13 +328,8 @@ class OESelftestTestContextExecutor(OETestContextExecutor):
 
         return rc
 
-    def _signal_clean_handler(self, signum, frame):
-        sys.exit(1)
-    
     def run(self, logger, args):
         self._process_args(logger, args)
-
-        signal.signal(signal.SIGTERM, self._signal_clean_handler)
 
         rc = None
         try:
@@ -315,20 +359,6 @@ class OESelftestTestContextExecutor(OETestContextExecutor):
                 rc = self._internal_run(logger, args)
         finally:
             config_paths = self.tc_kwargs['init']['config_paths']
-            if os.path.exists(config_paths['localconf_backup']):
-                copyfile(config_paths['localconf_backup'],
-                        config_paths['localconf'])
-                os.remove(config_paths['localconf_backup'])
-
-            if os.path.exists(config_paths['bblayers_backup']):
-                copyfile(config_paths['bblayers_backup'], 
-                        config_paths['bblayers'])
-                os.remove(config_paths['bblayers_backup'])
-
-            if os.path.exists(config_paths['localconf_class_backup']):
-                os.remove(config_paths['localconf_class_backup'])
-            if os.path.exists(config_paths['bblayers_class_backup']):
-                os.remove(config_paths['bblayers_class_backup'])
 
             output_link = os.path.join(os.path.dirname(args.output_log),
                     "%s-results.log" % self.name)
