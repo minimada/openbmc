@@ -1,7 +1,7 @@
-From f5d442a28aba83499045087b08ad978649a55d47 Mon Sep 17 00:00:00 2001
+From 64399b6712964248359a0c2f46d912eb70103702 Mon Sep 17 00:00:00 2001
 From: YSChu <yschu@nuvoton.com>
 Date: Wed, 14 Aug 2019 15:16:12 +0800
-Subject: [PATCH 2/2] add "Scale" d-bus interface property
+Subject: [PATCH] add "Scale" d-bus interface property
 
 Signed-off-by: YSChu <yschu@nuvoton.com>
 ---
@@ -13,10 +13,10 @@ Signed-off-by: YSChu <yschu@nuvoton.com>
  5 files changed, 10 insertions(+)
 
 diff --git a/include/CPUSensor.hpp b/include/CPUSensor.hpp
-index 8f9cb6e..09f2421 100644
+index 29cd54a..8eeefed 100644
 --- a/include/CPUSensor.hpp
 +++ b/include/CPUSensor.hpp
-@@ -31,6 +31,7 @@ class CPUSensor : public Sensor
+@@ -32,6 +32,7 @@ class CPUSensor : public Sensor
      static constexpr size_t warnAfterErrorCount = 10;
      static constexpr double maxReading = 127;
      static constexpr double minReading = -128;
@@ -25,10 +25,10 @@ index 8f9cb6e..09f2421 100644
  
    private:
 diff --git a/src/ADCSensor.cpp b/src/ADCSensor.cpp
-index 21131b8..c15c0e1 100644
+index 454944a..81383b0 100644
 --- a/src/ADCSensor.cpp
 +++ b/src/ADCSensor.cpp
-@@ -42,6 +42,7 @@ static constexpr unsigned int sensorScaleFactor = 1000;
+@@ -43,6 +43,7 @@ static constexpr unsigned int sensorScaleFactor = 1000;
  static constexpr double roundFactor = 10000; // 3 decimal places
  static constexpr double maxReading = 20;
  static constexpr double minReading = 0;
@@ -36,7 +36,7 @@ index 21131b8..c15c0e1 100644
  
  ADCSensor::ADCSensor(const std::string& path,
                       sdbusplus::asio::object_server& objectServer,
-@@ -64,6 +65,7 @@ ADCSensor::ADCSensor(const std::string& path,
+@@ -65,6 +66,7 @@ ADCSensor::ADCSensor(const std::string& path,
          "xyz.openbmc_project.Sensor.Value");
      sensorInterface->register_property("Unit",
          std::string("xyz.openbmc_project.Sensor.Value.Unit.Volts"));
@@ -45,22 +45,22 @@ index 21131b8..c15c0e1 100644
      {
          thresholdInterfaceWarning = objectServer.add_interface(
 diff --git a/src/CPUSensor.cpp b/src/CPUSensor.cpp
-index baf6e0d..c2d0ae8 100644
+index 6a0fa7a..9c87282 100644
 --- a/src/CPUSensor.cpp
 +++ b/src/CPUSensor.cpp
-@@ -58,6 +58,7 @@ CPUSensor::CPUSensor(const std::string& path, const std::string& objectType,
-             "xyz.openbmc_project.Sensor.Value");
-         sensorInterface->register_property("Unit",
-             std::string("xyz.openbmc_project.Sensor.Value.Unit.DegreesC"));
-+        sensorInterface->register_property("Scale", Scale);
-         if (thresholds::hasWarningInterface(thresholds))
-         {
-             thresholdInterfaceWarning = objectServer.add_interface(
+@@ -71,6 +71,7 @@ CPUSensor::CPUSensor(const std::string& path, const std::string& objectType,
+                 interfacePath, "xyz.openbmc_project.Sensor.Value");
+             sensorInterface->register_property("Unit",
+                 std::string("xyz.openbmc_project.Sensor.Value.Unit.DegreesC"));
++            sensorInterface->register_property("Scale", Scale);
+             if (thresholds::hasWarningInterface(thresholds))
+             {
+                 thresholdInterfaceWarning = objectServer.add_interface(
 diff --git a/src/HwmonTempSensor.cpp b/src/HwmonTempSensor.cpp
-index 305f9e1..74dab30 100644
+index 6a7d0a4..c55056a 100644
 --- a/src/HwmonTempSensor.cpp
 +++ b/src/HwmonTempSensor.cpp
-@@ -36,6 +36,7 @@ static constexpr size_t warnAfterErrorCount = 10;
+@@ -37,6 +37,7 @@ static constexpr size_t warnAfterErrorCount = 10;
  
  static constexpr double maxReading = 127;
  static constexpr double minReading = -128;
@@ -68,7 +68,7 @@ index 305f9e1..74dab30 100644
  
  HwmonTempSensor::HwmonTempSensor(
      const std::string& path, const std::string& objectType,
-@@ -56,6 +57,7 @@ HwmonTempSensor::HwmonTempSensor(
+@@ -58,6 +59,7 @@ HwmonTempSensor::HwmonTempSensor(
  
      sensorInterface->register_property("Unit",
          std::string("xyz.openbmc_project.Sensor.Value.Unit.DegreesC"));
@@ -77,10 +77,10 @@ index 305f9e1..74dab30 100644
      {
          thresholdInterfaceWarning = objectServer.add_interface(
 diff --git a/src/PSUSensor.cpp b/src/PSUSensor.cpp
-index f441042..7ef0d94 100644
+index 0f49157..6dc944b 100644
 --- a/src/PSUSensor.cpp
 +++ b/src/PSUSensor.cpp
-@@ -74,21 +74,25 @@ PSUSensor::PSUSensor(const std::string& path, const std::string& objectType,
+@@ -75,21 +75,25 @@ PSUSensor::PSUSensor(const std::string& path, const std::string& objectType,
      {
          sensorInterface->register_property("Unit",
              std::string("xyz.openbmc_project.Sensor.Value.Unit.DegreesC"));
