@@ -4,7 +4,7 @@ FILESEXTRAPATHS_prepend := "${THISDIR}/linux-nuvoton:"
 KBRANCH := "Poleg-5.4-OpenBMC"
 KSRC := "git://github.com/Nuvoton-Israel/linux;protocol=git;branch=${KBRANCH}"
 LINUX_VERSION := "5.4.16"
-SRCREV = "83e5d2e1593b3bc1ff35e5028c8f2c77a8222c5b"
+SRCREV = "317aef891ad9d3d054e8f8999be2897bf4b23505"
 
 SRC_URI_append = " file://buv-runbmc.cfg"
 SRC_URI_append = " \
