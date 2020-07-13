@@ -2,5 +2,5 @@ FILESEXTRAPATHS_prepend := "${THISDIR}/u-boot-nuvoton:"
 
 UBOOT_MAKE_TARGET_append = " DEVICE_TREE=${UBOOT_DEVICETREE}"
 
-SRCREV = "5041f37616bfa9dca56ef4a193405def9369a18d"
+SRCREV = "a9238ef9d47b8a68c0c9513fdfc8588a114b0313"
 SRC_URI_append = " file://fixed_phy.cfg"
