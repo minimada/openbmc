@@ -2,7 +2,6 @@ FILESEXTRAPATHS_prepend_buv-runbmc := "${THISDIR}/${PN}:"
 
 inherit image_version
 
-
 unset do_patch[noexec]
 do_patch[depends] = "os-release:do_populate_sysroot"
 
