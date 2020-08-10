@@ -15,6 +15,7 @@ RDEPENDS_${PN}-buv-common-utils = " \
     phosphor-webui \
     phosphor-host-postd \
     loadsvf \
+    obmc-ikvm \
     "
 
 SUMMARY_${PN}-buv-system = "BUV NUVOTON System"
