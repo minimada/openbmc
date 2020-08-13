@@ -60,8 +60,6 @@ Please submit any patches against the meta-runbmc-nuvoton layer to the maintaine
   * [In-Band Firmware Update](#in-band-firmware-update)
     + [HOST Tool](#host-tool)
     + [IPMI Library](#ipmi-library)
-- [Features In Progressing](#features-in-progressing)
-- [Features Planned](#features-planned)
 - [IPMI Commands Verified](#ipmi-commands-verified)
 - [DCMI Commands Verified](#dcmi-commands-verified)
 - [Image Size](#image-size)
@@ -128,7 +126,7 @@ PreferredEncoding: Hextile
 
 **Maintainer**
 
-* Joseph Liu
+* Jim Liu & Brian Ma
 
 ### Serial Over Lan
 <img align="right" width="30%" src="https://raw.githubusercontent.com/NTC-CCBG/snapshots/master/openbmc/SOL.PNG">
@@ -171,7 +169,7 @@ It's verified with Nuvoton's NPCM750 Olympus solution and Quanta RunBMC.
 
 **Maintainer**
 
-* Tyrone Ting
+* Jim Liu & Brian Ma
 
 ### Virtual Media
 <img align="right" width="20%" src="https://cdn.rawgit.com/NTC-CCBG/snapshots/3e65e7a/openbmc/vm_app_win.png">
@@ -209,24 +207,11 @@ Virtual Media (VM) is to emulate an USB drive on remote host PC via Network Bloc
 
     2. Operations of Virtual Media
         * After `Choose File`, click `Start` to start VM network service
-        * After clicking `Start`, you will see a new USB device on HOST OS
+        * After clicking `Start` and connect J2009 to your HOST, you will see a new USB device on HOST OS
         * If you want to stop this service, just click `Stop` to stop VM network service.
 
-    2.2 VM standalone application
-    * Download [application source code](https://github.com/Nuvoton-Israel/openbmc-util/tree/master/virtual_media_openbmc2.6)
-    * Follow the [readme](https://github.com/Nuvoton-Israel/openbmc-util/blob/master/virtual_media_openbmc2.6/NBDServerWSWindows/README) instructions install QT and Openssl
-    * Start QT creator, open project **VirtualMedia.pro**, then build all
-    * Launch windows/linux application
-        > _NOTICE : use `sudo` to launch app in linux and install `nmap` first_
-    *  Operations
-        + After `Chose an Image File` or `Select an USB Drive`, click `Search` to check which BMCs are on line
-        + Select any on line BMC and key in `Account/Password`, choose the `Export Type` to Image, and click `Start VM` to start VM network service (still not hook USB disk to host platform)
-        + After `Start VM`, click `Mount USB` to hook the emulated USB disk to host platform, or click `Stop VM` to stop VM network service.
-        + After `Mount USB`, click `UnMount USB` to emulate unplugging the USB disk from host platform
-        + After `UnMount USB`, click `Stop VM` to stop VM network service, or click `Mount USB` to hook USB disk to host platform.
-
 **Maintainer**
-* Medad CChien
+* Jim Liu & Brian Ma
 
 ### BMC Firmware Update
 <img align="right" width="30%" src="https://cdn.rawgit.com/NTC-CCBG/snapshots/cab7306/openbmc/firmware-update.png">
@@ -273,7 +258,7 @@ This is a secure flash update mechanism to update BMC firmware via WebUI.
 
 **Maintainer**
 
-* Medad CChien
+* Jim Liu & Brian Ma
 
 
 ## System
@@ -406,7 +391,7 @@ This is a secure flash update mechanism to update BMC firmware via WebUI.
     timedatectl list-timezones
     ```
     **Maintainer**  
-* Tim Lee
+* Jim Liu & Brian Ma
 
 ### Sensor
 [phosphor-hwmon](https://github.com/openbmc/phosphor-hwmon) daemon will periodically check the sensor reading to see if it exceeds lower bound or upper bound . If alarm condition is hit, the [phosphor-sel-logger](https://github.com/openbmc/phosphor-sel-logger) handles all sensor events to add new IPMI SEL records to the journal, [phosphor-host-ipmid](https://github.com/Nuvoton-Israel/phosphor-host-ipmid) will convert the journal SEL records to IPMI SEL record format and reply to host.
@@ -524,40 +509,28 @@ This is a secure flash update mechanism to update BMC firmware via WebUI.
 
 **Maintainer**
 
-* Stanley Chu
+* Jim Liu & Brian Ma
 
 ### LED
-<img align="right" width="30%" src="https://raw.githubusercontent.com/NTC-CCBG/snapshots/master/openbmc/ServerLed.PNG">  
+BUV have eight free led can control by customer
 
-Turning on ServerLED via WebUI will make **identify** leds on BMC start blinking,
- and **heartbeat** will start blinkling after BMC booted.
-
-**Source URL**
-* [https://github.com/Nuvoton-Israel/openbmc/tree/runbmc/meta-quanta/meta-olympus-nuvoton/recipes-phosphor/leds](https://github.com/Nuvoton-Israel/openbmc/tree/runbmc/meta-quanta/meta-olympus-nuvoton/recipes-phosphor/leds)
+Led gpio range is from 488 to 495
 
 **How to use**
-* Add EnclosureIdentify in LED [config file](https://github.com/Nuvoton-Israel/openbmc/blob/runbmc/meta-quanta/meta-olympus-nuvoton/recipes-phosphor/leds/olympus-nuvoton-led-manager-config/led.yaml)
+* use export command to turn on/off the led
   ```
-  BmcBooted:
-    heartbeat:
-        Action: 'Blink'
-        DutyOn: 50
-        Period: 1000
-  EnclosureIdentify:
-    identify:
-        Action: 'Blink'
-        DutyOn: 50
-        Period: 1000
-  ```
+  echo 488 > /sys/class/gpio/export
+  echo out > /sys/class/gpio/gpio488/direction
+  echo 0 > /sys/class/gpio/gpio488/value
 
-* Modify BSP layer [config](https://github.com/Nuvoton-Israel/openbmc/blob/runbmc/meta-quanta/meta-olympus-nuvoton/conf/machine/olympus-nuvoton.conf) to select NPCM750 LED config file
-  ```
-  PREFERRED_PROVIDER_virtual/phosphor-led-manager-config-native = "npcm750-led-manager-config-native"
+  echo 489 > /sys/class/gpio/export
+  echo out > /sys/class/gpio/gpio489/direction
+  echo 0 > /sys/class/gpio/gpio489/value
   ```
 
 **Maintainer**
 
-* Stanley Chu
+* Jim Liu & Brian Ma
 
 
 ### BIOS POST Code
@@ -567,29 +540,20 @@ In NPCM750, we support a FIFO for monitoring BIOS POST Code. Typically, this fea
 
 This is a patch for enabling BIOS POST Code feature in [phosphor-host-postd](https://github.com/openbmc/phosphor-host-postd) on Nuvoton's NPCM750.
 
-* [https://github.com/Nuvoton-Israel/openbmc/blob/runbmc/meta-quanta/meta-olympus-nuvoton/recipes-phosphor/host/phosphor-host-postd_%25.bbappend](https://github.com/Nuvoton-Israel/openbmc/blob/runbmc/meta-quanta/meta-olympus-nuvoton/recipes-phosphor/host/phosphor-host-postd_%25.bbappend)
+* [https://github.com/NTC-CCBG/openbmc/blob/buv-dev/meta-evb/meta-evb-nuvoton/meta-buv-runbmc/recipes-phosphor/host/phosphor-host-postd_%25.bbappend](https://github.com/NTC-CCBG/openbmc/blob/buv-dev/meta-evb/meta-evb-nuvoton/meta-buv-runbmc/recipes-phosphor/host/phosphor-host-postd_%25.bbappend)
 
 **How to use**
 
-* Execute BIOS POST Code test program by command in BMC
-  ```
-  snooper
-  ```
-
-  This command will trigger snooper test program to record BIOS POST Code from port 0x80 of host and save to file with timestamp filename in BMC for each host power on or reset.
-  > _Saved filename format example: 2019_4_30_11_52_35_ON_
-
 * Server Power on
 
-  Press `Power on` button from `Server control` ->`Server power operations` of WebUI.
-  During server power on, snooper test program will print received BIOS POST Code on screen and record to file in BMC at the same time.
-  > _Snooper test program print received BIOS POST Code example:_
-    > _recv: 0x3
-        recv: 0x2
-        recv: 0x7_
+  Press the host `Power on` button after bmc boot up
+
+* Seven segment display daemon to show  BIOS POST Code
+
+  The Seven segment display daemon can show the POST Code number to  Seven segment display
 
 **Maintainer**
-* Tim Lee
+* Jim Liu & Brian Ma
 
 ### FRU
 <img align="right" width="30%" src="https://cdn.rawgit.com/NTC-CCBG/snapshots/cab7306/openbmc/fru.png">
@@ -658,7 +622,7 @@ This is a patch for enabling FRU feature in [phosphor-impi-fru](https://github.c
   Select `Server health` -> `Hardware status` on **Web-UI** will show FRU Board Info/Chassis Info/Product Info area.
 
 **Maintainer**
-* Tim Lee
+* Jim Liu & Brian Ma
 
 ### Fan PID Control
 <img align="right" width="30%" src="https://cdn.rawgit.com/NTC-CCBG/snapshots/e12e9dd/openbmc/fan_stepwise_pwm.png">
@@ -824,7 +788,7 @@ In order to automatically apply accurate and responsive correction to a fan cont
 
 
 **Maintainer**
-* Tim Lee
+* Jim Liu & Brian Ma
 
 
 ## IPMI / DCMI
@@ -872,8 +836,7 @@ The patch integrates [phosphor-net-ipmid](https://github.com/Nuvoton-Israel/open
 
 **Maintainer**
 
-* Tyrone Ting
-* Stanley Chu
+* Jim Liu & Brian Ma
 
 
 ## JTAG Master
@@ -927,7 +890,10 @@ Here uses the RunBMC Olympus server as example.
 
 
 ### CPLD Programming
-The motherboard on server have a CPLD device that can be upgraded firmware on it. BMC can load svf file to program CPLD via JTAG.  
+BMC can load svf file to program CPLD via JTAG.  
+
+BUV can use J705 pin5 , pin7 , pin9 , pin13 to connect CPLD.
+
 
 **How to use**
 
@@ -937,7 +903,7 @@ loadsvf -d /dev/jtag0 -s firmware.svf
 ```
 
 **Maintainer**
-* Stanley Chu
+* Jim Liu & Brian Ma
 
 
 ## In-Band Firmware Update
@@ -1045,212 +1011,13 @@ This is an OpenBMC IPMI Library (Handler) for In-Band Firmware Update.
     ```
 
 **Maintainer**
-* Medad CChien
-
-
-## Features In Progressing
-* Improve IPMI
-* Improve Redfish
-* System logs
-
-## Features Planned
-* PLDM
-* NCSI
-* Improve Power contorl
-* Intel Platform related features
+* Jim Liu & Brian Ma
 
 # IPMI Commands Verified
-
-| Command | KCS | RMCP+ | IPMB |
-| :--- | :---: | :---: | :---: |
-| **IPM Device Global Commands** |  |  |  |
-| Device ID | V | V | V |
-| Cold Reset | V | V | V |
-| Warm Reset | - | - | - |
-| Get Self Test Results | V | V | V |
-| Manufacturing Test On | - | - | - |
-| Set ACPI Power State | V | V | V |
-| Get ACPI Power State | V | V | V |
-| Get Device GUID | V | V | V |
-| Get NetFn Support | - | - | - |
-| Get Command Support | - | - | - |
-| Get Command Sub-function Support | - | - | - |
-| Get Configurable Commands | - | - | - |
-| Get Configurable Command Sub-functions | - | - | - |
-| Set Command Enables | - | - | - |
-| Get Command Enables | - | - | - |
-| Set Command Sub-function Enables | - | - | - |
-| Get Command Sub-function Enables | - | - | - |
-| Get OEM NetFn IANA Support | - | - | - |
-| **BMC Watchdog Timer Commands** |  |  |  |
-| Reset Watchdog Timer | V | V | V |
-| Set Watchdog Timer | V | V | V |
-| Get Watchdog Timer | V | V | V |
-| **BMC Device and Messaging Commands** |  |  |  |
-| Set BMC Global Enables | V | V | V |
-| Get BMC Global Enables | V | V | V |
-| Clear Message Flags | - | - | - |
-| Get Message Flags | V | V | V |
-| Enable Message Channel Receive | - | - | - |
-| Get Message | - | - | - |
-| Send Message | - | - | - |
-| Read Event Message Buffer | V | V | V |
-| Get BT Interface Capabilities | V | V | V |
-| Get System GUID | V | V | V |
-| Set System Info Parameters | V | V | V |
-| Get System Info Parameters | V | V | V |
-| Get Channel Authentication Capabilities | V | V | V |
-| Get Session Challenge | - | - | - |
-| Activate Session | - | - | - |
-| Set Session Privilege Level | - | - | - |
-| Close Session | - | - | - |
-| Get Session Info | - | - | - |
-| Get AuthCode | - | - | - |
-| Set Channel Access | V | V | V |
-| Get Channel Access | V | V | V |
-| Get Channel Info Command | V | V | V |
-| User Access Command | V | V | V |
-| Get User Access Command | V | V | V |
-| Set User Name | V | V | V |
-| Get User Name Command | V | V | V |
-| Set User Password Command | V | V | V |
-| Activate Payload | - | V | - |
-| Deactivate Payload | - | V | - |
-| Get Payload Activation Status | - | V | - |
-| Get Payload Instance Info | - | V | - |
-| Set User Payload Access | V | V | V |
-| Get User Payload Access | V | V | V |
-| Get Channel Payload Support | V | V | V |
-| Get Channel Payload Version | V | V | V |
-| Get Channel OEM Payload Info | - | - | - |
-| Master Write-Read | V | V | V |
-| Get Channel Cipher Suites | V | V| V |
-| Suspend/Resume Payload Encryption | - | - | - |
-| Set Channel Security Keys | - | - | - |
-| Get System Interface Capabilities | - | - | - |
-| Firmware Firewall Configuration | - | - | - |
-| **Chassis Device Commands** |  |  |  |
-| Get Chassis Capabilities | V | V | V |
-| Get Chassis Status | V | V | V |
-| Chassis Control | V | V | V |
-| Chassis Reset | - | - | - |
-| Chassis Identify | V | V | V |
-| Set Front Panel Button Enables | - | - | - |
-| Set Chassis Capabilities | V | V | V |
-| Set Power Restore Policy | V | V | V |
-| Set Power Cycle Interval | - | - | - |
-| Get System Restart Cause | - | - | - |
-| Set System Boot Options | V | V | V |
-| Get System Boot Options | V | V | V |
-| Get POH Counter | V | V | V |
-| **Event Commands** |  |  |  |
-| Set Event Receiver | - | - | - |
-| Get Event Receiver | - | - | - |
-| Platform Event | V | V | V |
-| **PEF and Alerting Commands** |  |  |  |
-| Get PEF Capabilities | - | - | - |
-| Arm PEF Postpone Timer | - | - | - |
-| Set PEF Configuration Parameters | - | - | - |
-| Get PEF Configuration Parameters | - | - | - |
-| Set Last Processed Event ID | - | - | - |
-| Get Last Processed Event ID | - | - | - |
-| Alert Immediate | - | - | - |
-| PET Acknowledge | - | - | - |
-| **Sensor Device Commands** |  |  |  |
-| Get Device SDR Info | V | V | V |
-| Get Device SDR | V | V | V |
-| Reserve Device SDR Repository | V | V | V |
-| Get Sensor Reading Factors | - | - | - |
-| Set Sensor Hysteresis | - | - | - |
-| Get Sensor Hysteresis | - | - | - |
-| Set Sensor Threshold | - | - | - |
-| Get Sensor Threshold | V | V | V |
-| Set Sensor Event Enable | - | - | - |
-| Get Sensor Event Enable | - | - | - |
-| Re-arm Sensor Events | - | - | - |
-| Get Sensor Event Status | - | - | - |
-| Get Sensor Reading | V | V | V |
-| Set Sensor Type | - | - | - |
-| Get Sensor Type | V | V | V |
-| Set Sensor Reading And Event Status | V | V | V |
-| **FRU Device Commands** |  |  |  |
-| Get FRU Inventory Area Info | V | V | V |
-| Read FRU Data | V | V | V |
-| Write FRU Data | V | V | V |
-| **SDR Device Commands** |  |  |  |
-| Get SDR Repository Info | V | V | V |
-| Get SDR Repository Allocation Info | - | - | - |
-| Reserve SDR Repository | V | V | V |
-| Get SDR | V | V | V |
-| Add SDR | - | - | - |
-| Partial Add SDR | - | - | - |
-| Delete SDR | - | - | - |
-| Clear SDR Repository | - | - | - |
-| Get SDR Repository Time | - | - | - |
-| Set SDR Repository Time | - | - | - |
-| Enter SDR Repository Update Mode | - | - | - |
-| Exit SDR Repository Update Mode | - | - | - |
-| Run Initialization Agent | - | - | - |
-| **SEL Device Commands** |  |  |  |
-| Get SEL Info | V | V | V |
-| Get SEL Allocation Info | - | - | - |
-| Reserve SEL | V | V | V |
-| Get SEL Entry | V | V | V |
-| Add SEL Entry | V | V | V |
-| Partial Add SEL Entry | - | - | - |
-| Delete SEL Entry | V | V | V |
-| Clear SEL | V | V | V |
-| Get SEL Time | V | V | V |
-| Set SEL Time | V | V | V |
-| Get Auxiliary Log Status | - | - | - |
-| Set Auxiliary Log Status | - | - | - |
-| Get SEL Time UTC Offset | - | - | - |
-| Set SEL Time UTC Offset | - | - | - |
-| **LAN Device Commands** |  |  |  |
-| Set LAN Configuration Parameters | V | V | V |
-| Get LAN Configuration Parameters | V | V | V |
-| Suspend BMC ARPs | - | - | - |
-| Get IP/UDP/RMCP Statistics | - | - | - |
-| **Serial/Modem Device Commands** |  |  |  |
-| Set Serial/Modem Mux | - | - | - |
-| Set Serial Routing Mux | - | - | - |
-| SOL Activating | - | V | - |
-| Set SOL Configuration Parameters | - | V | - |
-| Get SOL Configuration Parameters | - | V | - |
-| **Command Forwarding Commands** |  |  |  |
-| Forwarded Command | - | - | - |
-| Set Forwarded Commands | - | - | - |
-| Get Forwarded Commands | - | - | - |
-| Enable Forwarded Commands | - | - | - |
-> _V: Verified_  
-> _-: Unsupported_
+reference with [IPMI.md](https://github.com/NTC-CCBG/openbmc/tree/buv-dev/meta-evb/meta-evb-nuvoton/meta-buv-runbmc/IPMI.md)
 
 # DCMI Commands Verified
-| Command | Verified |
-| :--- | :---: | 
-| **DCMI Capabilities & Discovery Configuration Commands** |  |
-| Get DCMI Capabilities Info | V |
-| Set DCMI Configuration Parameters | V |
-| Get DCMI Configuration Parameters | V |
-| Get Management Controller Identifier String | V |
-| Set Management Controller Identifier String | V |
-| **Platform & Asset Identification Commands** |  |
-| Get Asset Tag | V |
-| Set Asset Tag | V |
-| **Sensor & SDR Commands** |  |
-| Get DCMI Sensor Info| V |
-| **Power Management** |  |
-| Get Power Reading | V |
-| Get Power Limit | V |
-| Set Power Limit | V |
-| Activate / Deactivate Power Limit | V |
-| **Thermal Management** |  |
-| Set Thermal Limit | - |
-| Get Thermal List | - |
-| Get Temperature Reading | V |
-
-> _V: Verified_  
-> _-: Unsupported_
+reference with [DCMI.md](https://github.com/NTC-CCBG/openbmc/tree/buv-dev/meta-evb/meta-evb-nuvoton/meta-buv-runbmc/DCMI.md)
 
 # Image Size
 Type          | Size    | Note                                                                                                     |
