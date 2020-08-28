@@ -13,4 +13,5 @@ SRC_URI_append_buv-runbmc = " \
   file://0003-Revert-mtd-spi-nor-fix-options-for-mx66l51235f.patch \
   file://0004-add-seven_seg_gpio.patch \
   file://0005-misc-Character-device-driver.patch \
+  file://0006-driver-SPI-add-w25q01jv-support.patch \
   "
