@@ -1,7 +1,7 @@
 SRC_URI_remove_buv-runbmc = "git://github.com/openbmc/phosphor-host-ipmid"
 SRC_URI_prepend_buv-runbmc = "git://github.com/Nuvoton-Israel/phosphor-host-ipmid"
 
-SRCREV := "0dd10bb5e4221916d55beb455435138f8dbb9a24"
+SRCREV := "18ef684602df1a24ace76f16c24d143ec347c237"
 
 DEPENDS_append_buv-runbmc = " buv-runbmc-yaml-config"
 

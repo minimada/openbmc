@@ -1,18 +1,22 @@
+FILESEXTRAPATHS_prepend_buv-runbmc := "${THISDIR}/${PN}:"
+
+SRC_URI_append_buv-runbmc = " file://0010-bmcweb-fix-segmentation-fault-in-update-service.patch"
+
 # Enable CPU Log and Raw PECI support
-# EXTRA_OECMAKE += "-DBMCWEB_ENABLE_REDFISH_CPU_LOG=ON"
-# EXTRA_OECMAKE += "-DBMCWEB_ENABLE_REDFISH_RAW_PECI=ON"
+#EXTRA_OEMESON_append = " -Dredfish-cpu-log=enabled"
+#EXTRA_OEMESON_append = " -Dredfish-raw-peci=enabled"
 
 # Enable Redfish BMC Journal support
-# EXTRA_OECMAKE += "-DBMCWEB_ENABLE_REDFISH_BMC_JOURNAL=ON"
+# EXTRA_OEMESON_append = " -Dredfish-bmc-journal=enabled"
 
 # Enable DBUS log service
-EXTRA_OECMAKE += "-DBMCWEB_ENABLE_REDFISH_DBUS_LOG_ENTRIES=ON"
+EXTRA_OEMESON_append = " -Dredfish-dbus-log=enabled"
 
 # Enable TFTP
-EXTRA_OECMAKE += "-DBMCWEB_INSECURE_ENABLE_REDFISH_FW_TFTP_UPDATE=ON"
+EXTRA_OEMESON_append = " -Dinsecure-tftp-update=enabled"
 
 # Increase body limit for BIOS FW
-EXTRA_OECMAKE += "-DBMCWEB_HTTP_REQ_BODY_LIMIT_MB=35"
+EXTRA_OEMESON_append = " -Dhttp-body-limit=35"
 
 # enable debug
-# EXTRA_OECMAKE += "-DCMAKE_BUILD_TYPE=Debug"
+# EXTRA_OEMESON_append = " -Dbmcweb-logging=enabled"
