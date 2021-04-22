@@ -19,3 +19,8 @@ require recipes-kernel/linux/linux-yocto.inc
 
 # From 4.16+ the COPYING file changed
 LIC_FILES_CHKSUM = "file://COPYING;md5=6bc538ed5bd9a7fc9398086aedcd7e46"
+
+UBOOT_SIGN_ENABLE = "1"
+DEPENDS += "phosphor-nuvoton-signing-key-native"
+UBOOT_SIGN_KEYDIR = "${DEPLOY_DIR_IMAGE}/uboot_fitkey/"
+UBOOT_SIGN_KEYNAME = "Nuvoton"

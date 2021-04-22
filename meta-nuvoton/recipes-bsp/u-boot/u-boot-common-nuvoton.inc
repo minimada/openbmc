@@ -9,6 +9,9 @@ UBRANCH = "npcm7xx-v2019.01"
 SRC_URI = "git://github.com/Nuvoton-Israel/u-boot.git;branch=${UBRANCH}"
 SRCREV = "9033cd58bf7050e8aa9a6b08ba53ed8d72e17394"
 
+SRC_URI_append = " file://fit_sign_support.cfg"
+UBOOT_SIGN_ENABLE = "1"
+
 S = "${WORKDIR}/git"
 
 PV .= "+${UBRANCH}+"

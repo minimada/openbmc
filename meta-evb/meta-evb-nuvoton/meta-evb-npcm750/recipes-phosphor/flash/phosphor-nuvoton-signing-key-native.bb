@@ -8,9 +8,14 @@ inherit allarch
 inherit native
 
 SRC_URI += "file://Nuvoton.priv"
+SRC_URI += "file://Nuvoton.crt"
 
 do_install() {
 	bbplain "Using Nuvoton image signing key!"
 	install -d ${D}${datadir}
 	install -m 400 ${WORKDIR}/Nuvoton.priv ${D}${datadir}
+
+	install -d ${DEPLOY_DIR_IMAGE}/uboot_fitkey
+	install -m 400 ${WORKDIR}/Nuvoton.priv ${DEPLOY_DIR_IMAGE}/uboot_fitkey/Nuvoton.key
+    install -m 400 ${WORKDIR}/Nuvoton.crt ${DEPLOY_DIR_IMAGE}/uboot_fitkey/
 }
