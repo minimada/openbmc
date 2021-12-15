@@ -1,0 +1,43 @@
+From abd02cffe1147864c2c40353b1e04b86e34cf919 Mon Sep 17 00:00:00 2001
+From: Brian Ma <chma0@nuvoton.com>
+Date: Wed, 15 Dec 2021 16:06:51 +0800
+Subject: [PATCH] remove fiux
+
+---
+ arch/arm/boot/dts/nuvoton-npcm750-evb.dts | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/arch/arm/boot/dts/nuvoton-npcm750-evb.dts b/arch/arm/boot/dts/nuvoton-npcm750-evb.dts
+index e8bf154a729a..0db000c646d3 100644
+--- a/arch/arm/boot/dts/nuvoton-npcm750-evb.dts
++++ b/arch/arm/boot/dts/nuvoton-npcm750-evb.dts
+@@ -150,7 +150,7 @@
+ 
+ &gmac1 {
+ 	phy-mode = "rgmii-id";
+-	status = "okay";
++	status = "disabled";
+ };
+ 
+ &emc0 {
+@@ -168,7 +168,7 @@
+ 			&r2err_pins
+ 			&r2md_pins>;
+ 	#use-ncsi; /* add this to support ncsi */
+-	status = "okay";
++	status = "disabled";
+ };
+ 
+ &ehci1 {
+@@ -293,7 +293,7 @@
+ };
+ 
+ &fiux {
+-	status = "okay";
++	status = "disabled";
+ 	spix-mode;
+ 	spi-nor@0 {
+ 		compatible = "m25p80-nonjedec";
+-- 
+2.17.1
+

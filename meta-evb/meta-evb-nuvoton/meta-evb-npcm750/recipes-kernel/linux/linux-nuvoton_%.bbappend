@@ -9,5 +9,6 @@ SRC_URI += "file://enable-slave-mqueue.cfg"
 
 SRC_URI += "file://0001-partitions.patch"
 SRC_URI += "file://0001-Revert-mtd-spi-nor-fix-options-for-mx66l51235f.patch"
+SRC_URI += "file://0001-remove-fiux.patch"
 #SRC_URI += "file://0001-fru-modify-dts-for-eeprom.patch"
 #SRC_URI += "file://0001-hand-over-pspi1-control-to-jtag-master.patch"

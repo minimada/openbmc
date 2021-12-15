@@ -9,6 +9,8 @@ UBRANCH = "npcm7xx-v2019.01"
 SRC_URI = "git://github.com/Nuvoton-Israel/u-boot.git;branch=${UBRANCH}"
 SRCREV = "9033cd58bf7050e8aa9a6b08ba53ed8d72e17394"
 
+SRC_URI_append = " file://u-boot-emmc.cfg"
+
 S = "${WORKDIR}/git"
 
 PV .= "+${UBRANCH}+"
