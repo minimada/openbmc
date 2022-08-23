@@ -1,0 +1,450 @@
+From 1ecfbe923d59b0df8227bd8fa0b6f6f9cd617ac7 Mon Sep 17 00:00:00 2001
+From: Brian Ma <chma0@nuvoton.com>
+Date: Fri, 12 Aug 2022 11:04:15 +0800
+Subject: [PATCH] add misc sensor support
+
+---
+ include/MiscSensor.hpp |  38 +++++
+ meson_options.txt      |   1 +
+ src/MiscSensor.cpp     | 350 +++++++++++++++++++++++++++++++++++++++++
+ src/meson.build        |  16 ++
+ 4 files changed, 405 insertions(+)
+ create mode 100644 include/MiscSensor.hpp
+ create mode 100644 src/MiscSensor.cpp
+
+diff --git a/include/MiscSensor.hpp b/include/MiscSensor.hpp
+new file mode 100644
+index 00000000..d29aa0c0
+--- /dev/null
++++ b/include/MiscSensor.hpp
+@@ -0,0 +1,38 @@
++#pragma once
++#include <boost/asio/deadline_timer.hpp>
++#include <boost/container/flat_map.hpp>
++#include <sensor.hpp>
++
++#include <chrono>
++#include <limits>
++#include <memory>
++#include <string>
++#include <vector>
++
++struct MiscSensor : public Sensor
++{
++    MiscSensor(std::shared_ptr<sdbusplus::asio::connection>& conn,
++               boost::asio::io_service& io, const std::string& name,
++               const std::string& sensorConfiguration,
++               sdbusplus::asio::object_server& objectServer,
++               std::vector<thresholds::Threshold>&& thresholds, uint8_t busId,
++               uint8_t address, uint8_t tempCmd, uint8_t tempSrc,
++               uint8_t readBytes);
++    ~MiscSensor() override;
++
++    void checkThresholds(void) override;
++    void read(void);
++    void init(void);
++
++    uint8_t busId;
++    uint8_t address;
++    uint8_t tempCmd;
++    uint8_t tempSrc;
++    uint8_t readBytes;
++
++  private:
++    int getSOCInfoBlock(uint8_t* data);
++    sdbusplus::asio::object_server& objectServer;
++    boost::asio::deadline_timer waitTimer;
++    uint8_t msgId;
++};
+diff --git a/meson_options.txt b/meson_options.txt
+index 93f29723..74328368 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -14,3 +14,4 @@ option('tests', type: 'feature', value: 'enabled', description: 'Build tests.',)
+ option('validate-unsecure-feature', type : 'feature', value : 'disabled', description : 'Enables unsecure features required by validation. Note: mustbe turned off for production images.',)
+ option('insecure-sensor-override', type : 'feature', value : 'disabled', description : 'Enables Sensor override feature without any check.',)
+ option('dimm', type: 'feature', value: 'enabled', description: 'Enable DIMM sensor.',)
++option('misc', type: 'feature', value: 'enabled', description: 'Enable Misc sensor.',)
+diff --git a/src/MiscSensor.cpp b/src/MiscSensor.cpp
+new file mode 100644
+index 00000000..d5601d58
+--- /dev/null
++++ b/src/MiscSensor.cpp
+@@ -0,0 +1,350 @@
++/*
++// Copyright (c) 2019 Intel Corporation
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//      http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++*/
++#include <MiscSensor.hpp>
++#include <Utils.hpp>
++#include <VariantVisitors.hpp>
++#include <boost/algorithm/string/predicate.hpp>
++#include <boost/container/flat_map.hpp>
++#include <sdbusplus/asio/connection.hpp>
++#include <sdbusplus/asio/object_server.hpp>
++#include <sdbusplus/bus/match.hpp>
++
++#include <chrono>
++#include <cmath>
++#include <functional>
++#include <iostream>
++#include <limits>
++#include <memory>
++#include <numeric>
++#include <string>
++#include <vector>
++
++extern "C"
++{
++#include <i2c/smbus.h>
++#include <linux/i2c-dev.h>
++}
++
++constexpr const bool debug = false;
++
++constexpr const char* configInterface =
++    "xyz.openbmc_project.Configuration.MiscSensor";
++static constexpr double mTempMaxReading = 0xFF;
++static constexpr double mTempMinReading = 0;
++
++boost::container::flat_map<std::string, std::unique_ptr<MiscSensor>> sensors;
++
++MiscSensor::MiscSensor(std::shared_ptr<sdbusplus::asio::connection>& conn,
++                       boost::asio::io_service& io,
++                       const std::string& sensorName,
++                       const std::string& sensorConfiguration,
++                       sdbusplus::asio::object_server& objectServer,
++                       std::vector<thresholds::Threshold>&& thresholdData,
++                       uint8_t busId, uint8_t address, uint8_t tempCmd,
++                       uint8_t tempSrc, uint8_t readBytes) :
++    Sensor(escapeName(sensorName), std::move(thresholdData),
++           sensorConfiguration, "SOC", false, false, mTempMaxReading,
++           mTempMinReading, conn, PowerState::on),
++    busId(busId), address(address), tempCmd(tempCmd), tempSrc(tempSrc),
++    readBytes(readBytes), objectServer(objectServer), waitTimer(io)
++{
++    sensorInterface = objectServer.add_interface(
++        "/xyz/openbmc_project/sensors/temperature/" + name,
++        "xyz.openbmc_project.Sensor.Value");
++
++    if (thresholds::hasWarningInterface(thresholds))
++    {
++        thresholdInterfaceWarning = objectServer.add_interface(
++            "/xyz/openbmc_project/sensors/temperature/" + name,
++            "xyz.openbmc_project.Sensor.Threshold.Warning");
++    }
++    if (thresholds::hasCriticalInterface(thresholds))
++    {
++        thresholdInterfaceCritical = objectServer.add_interface(
++            "/xyz/openbmc_project/sensors/temperature/" + name,
++            "xyz.openbmc_project.Sensor.Threshold.Critical");
++    }
++    association = objectServer.add_interface(
++        "/xyz/openbmc_project/sensors/temperature/" + name,
++        association::interface);
++}
++
++MiscSensor::~MiscSensor()
++{
++    waitTimer.cancel();
++    objectServer.remove_interface(thresholdInterfaceWarning);
++    objectServer.remove_interface(thresholdInterfaceCritical);
++    objectServer.remove_interface(sensorInterface);
++    objectServer.remove_interface(association);
++}
++
++void MiscSensor::init(void)
++{
++    setInitialProperties(dbusConnection, sensor_paths::unitDegreesC);
++    read();
++}
++
++void MiscSensor::checkThresholds(void)
++{
++    thresholds::checkThresholds(this);
++}
++
++int MiscSensor::getSOCInfoBlock(uint8_t* data)
++{
++    std::string i2cBus = "/dev/i2c-" + std::to_string(busId);
++    int fd = open(i2cBus.c_str(), O_RDWR);
++
++    if (fd < 0)
++    {
++        std::cerr << " unable to open i2c device" << i2cBus << "  err=" << fd
++                  << "\n";
++        return -1;
++    }
++
++    /*if (ioctl(fd, I2C_SLAVE_FORCE, address) < 0)
++    {
++        std::cerr << " unable to set device address\n";
++        close(fd);
++        return -1;
++    }*/
++
++    unsigned long funcs = 0;
++    if (ioctl(fd, I2C_FUNCS, &funcs) < 0)
++    {
++        std::cerr << " not support I2C_FUNCS\n";
++        close(fd);
++        return -1;
++    }
++
++    if (!(funcs & I2C_FUNC_I2C))
++    {
++        std::cerr << " not support I2C_FUNC_I2C\n";
++        close(fd);
++        return -1;
++    }
++
++    static uint8_t buffer[10];
++    struct i2c_msg msgs[2];
++    struct i2c_rdwr_ioctl_data rdwr;
++    // set read temperature command
++    buffer[0] = 3; // data length
++    buffer[1] = msgId++;
++    buffer[2] = tempCmd;
++    buffer[3] = tempSrc;
++    msgs[0].addr = address;
++    msgs[0].flags = I2C_M_RD;
++    msgs[0].len = 4;
++    msgs[0].buf = buffer;
++    rdwr.msgs = msgs;
++    rdwr.nmsgs = 1;
++    int nmsgs_sent = ioctl(fd, I2C_RDWR, &rdwr);
++    if (nmsgs_sent <= 0)
++    {
++        std::cerr << "Error: Sending write command message failed";
++        close(fd);
++        return -1;
++    }
++
++    // read response
++    buffer[0] = tempCmd;
++    msgs[0].len = 1;
++    msgs[1].addr = address;
++    msgs[1].flags = I2C_M_RD;
++    msgs[1].len = readBytes;
++    msgs[1].buf = buffer;
++    rdwr.nmsgs = 2;
++    nmsgs_sent = ioctl(fd, I2C_RDWR, &rdwr);
++    if (nmsgs_sent < 2)
++    {
++        std::cerr << "Error: Sending read messages failed";
++        close(fd);
++        return -1;
++    }
++
++    *data = buffer[readBytes - 1];
++    close(fd);
++
++    return 0;
++}
++
++void MiscSensor::read(void)
++{
++    static constexpr size_t pollTime = 6; // in seconds
++
++    waitTimer.expires_from_now(boost::posix_time::seconds(pollTime));
++    waitTimer.async_wait([this](const boost::system::error_code& ec) {
++        if (ec == boost::asio::error::operation_aborted)
++        {
++            return; // we're being cancelled
++        }
++        // read timer error
++        if (ec)
++        {
++            std::cerr << "timer error\n";
++            return;
++        }
++        uint8_t temp;
++        int ret = getSOCInfoBlock(&temp);
++        if (ret >= 0)
++        {
++            double v = static_cast<double>(temp) / 1000;
++            if constexpr (debug)
++            {
++                std::cerr << "Value update to " << v << "raw reading "
++                          << static_cast<int>(temp) << "\n";
++            }
++            updateValue(v);
++        }
++        else
++        {
++            std::cerr << "Invalid read getSOCInfoBlock\n";
++            incrementError();
++        }
++        read();
++    });
++}
++
++void createSensors(
++    boost::asio::io_service& io, sdbusplus::asio::object_server& objectServer,
++    boost::container::flat_map<std::string, std::unique_ptr<MiscSensor>>&
++        sensors,
++    std::shared_ptr<sdbusplus::asio::connection>& dbusConnection)
++{
++    if (!dbusConnection)
++    {
++        std::cerr << "Connection not created\n";
++        return;
++    }
++
++    dbusConnection->async_method_call(
++        [&io, &objectServer, &dbusConnection, &sensors](
++            boost::system::error_code ec, const ManagedObjectType& resp) {
++            if (ec)
++            {
++                std::cerr << "Error contacting entity manager\n";
++                return;
++            }
++            for (const auto& pathPair : resp)
++            {
++                for (const auto& entry : pathPair.second)
++                {
++                    if (entry.first != configInterface)
++                    {
++                        continue;
++                    }
++                    std::string name =
++                        loadVariant<std::string>(entry.second, "Name");
++
++                    std::vector<thresholds::Threshold> sensorThresholds;
++                    if (!parseThresholdsFromConfig(pathPair.second,
++                                                   sensorThresholds))
++                    {
++                        std::cerr << "error populating thresholds for " << name
++                                  << "\n";
++                    }
++
++                    uint8_t busId = loadVariant<uint8_t>(entry.second, "Bus");
++
++                    uint8_t address =
++                        loadVariant<uint8_t>(entry.second, "Address");
++
++                    uint8_t tempCmd =
++                        loadVariant<uint8_t>(entry.second, "Command");
++                    uint8_t tempSrc =
++                        loadVariant<uint8_t>(entry.second, "Source");
++                    uint8_t readBytes =
++                        loadVariant<uint8_t>(entry.second, "ReadBytes");
++
++                    if constexpr (debug)
++                    {
++                        std::cerr
++                            << "Configuration parsed for \n\t" << entry.first
++                            << "\n"
++                            << "with\n"
++                            << "\tName: " << name << "\n"
++                            << "\tBus: " << static_cast<int>(busId) << "\n"
++                            << "\tAddress: " << static_cast<int>(address)
++                            << "\n"
++                            << "\tCommand: " << static_cast<int>(tempCmd)
++                            << "\n"
++                            << "\tSource: " << static_cast<int>(tempSrc) << "\n"
++                            << "\tRead Bytes: " << static_cast<int>(readBytes)
++                            << "\n";
++                    }
++
++                    auto& sensor = sensors[name];
++
++                    sensor = std::make_unique<MiscSensor>(
++                        dbusConnection, io, name, pathPair.first, objectServer,
++                        std::move(sensorThresholds), busId, address, tempCmd,
++                        tempSrc, readBytes);
++
++                    sensor->init();
++                }
++            }
++        },
++        entityManagerName, "/", "org.freedesktop.DBus.ObjectManager",
++        "GetManagedObjects");
++}
++
++int main()
++{
++    boost::asio::io_service io;
++    auto systemBus = std::make_shared<sdbusplus::asio::connection>(io);
++    systemBus->request_name("xyz.openbmc_project.MiscSensor");
++    sdbusplus::asio::object_server objectServer(systemBus);
++
++    io.post([&]() { createSensors(io, objectServer, sensors, systemBus); });
++
++    boost::asio::deadline_timer configTimer(io);
++
++    std::function<void(sdbusplus::message::message&)> eventHandler =
++        [&](sdbusplus::message::message&) {
++            configTimer.expires_from_now(boost::posix_time::seconds(1));
++            // create a timer because normally multiple properties change
++            configTimer.async_wait([&](const boost::system::error_code& ec) {
++                if (ec == boost::asio::error::operation_aborted)
++                {
++                    return; // we're being canceled
++                }
++                // config timer error
++                if (ec)
++                {
++                    std::cerr << "timer error\n";
++                    return;
++                }
++                createSensors(io, objectServer, sensors, systemBus);
++                if (sensors.empty())
++                {
++                    std::cout << "Configuration not detected\n";
++                }
++            });
++        };
++
++    sdbusplus::bus::match::match configMatch(
++        static_cast<sdbusplus::bus::bus&>(*systemBus),
++        "type='signal',member='PropertiesChanged',"
++        "path_namespace='" +
++            std::string(inventoryPath) +
++            "',"
++            "arg0namespace='" +
++            configInterface + "'",
++        eventHandler);
++
++    setupManufacturingModeMatch(*systemBus);
++    io.run();
++    return 0;
++}
+diff --git a/src/meson.build b/src/meson.build
+index 03fc95c9..364dad29 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -208,3 +208,19 @@ if get_option('dimm').enabled()
+         install: true,
+     )
+ endif
++
++
++if get_option('misc').enabled()
++    executable(
++        'miscsensor',
++        'MiscSensor.cpp',
++        dependencies: [
++            default_deps,
++            thresholds_dep,
++            utils_dep,
++        ],
++        implicit_include_directories: false,
++        include_directories: '../include',
++        install: true,
++    )
++endif
+-- 
+2.17.1
+
