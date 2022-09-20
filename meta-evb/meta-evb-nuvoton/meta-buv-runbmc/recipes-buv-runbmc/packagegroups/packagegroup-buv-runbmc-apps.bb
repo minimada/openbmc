@@ -47,6 +47,7 @@ RDEPENDS:${PN}-system = " \
     openssl-bin \
     openssl-engines \
     nuvoton-ipmi-oem \
+    fru-device \
     "
 
 SUMMARY:${PN}-entity = "BUV RunBMC entity"

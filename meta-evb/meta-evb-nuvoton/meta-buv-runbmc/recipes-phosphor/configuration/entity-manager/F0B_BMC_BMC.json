@@ -867,6 +867,33 @@
             "Zones": [
                 "Zone3", "Zone4"
             ]
+        },
+        {
+            "Class": "Gpio",
+            "GpioPolarity": "Low",
+            "Name": "Chassis_Intrusion_Sensor",
+            "Type": "ChassisIntrusionSensor"
+        },
+        {
+            "Unit": "xyz.openbmc_project.Sensor.Value.Unit.Digital",
+            "EvStat": 231,
+            "Direction": "Input",
+            "Name": "CPU_MISSING_TEST",
+            "LineName": "CPU_MISSING_TEST",
+            "Polarity": "Low",
+            "DType": "0x07",
+            "EventType": "0x03",
+            "EventOffset": "0",
+            "Type": "Digitalgpio"
+        },
+        {
+            "Unit": "xyz.openbmc_project.Sensor.Value.Unit.Discrete",
+            "EvStat": 231,
+            "Name": "WATCHDOG2",
+            "DType": "0x23",
+            "EventType": "0x6f",
+            "EventOffset": "0",
+            "Type": "Discevent"
         }
     ],
     "Name": "BUV_RUNBMC_NUVOTON",

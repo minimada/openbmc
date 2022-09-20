@@ -1,0 +1,1210 @@
+From e75180cd8e8dd04924042a3ab7594881accfddc7 Mon Sep 17 00:00:00 2001
+From: Brian Ma <chma0@nuvoton.com>
+Date: Mon, 29 Aug 2022 14:02:33 +0800
+Subject: [PATCH] Add gpiodigital sensor
+
+---
+ .gitignore                                    |   1 +
+ include/EventSensor.hpp                       |  28 ++
+ include/GpioSensor.hpp                        |  37 +++
+ include/sensor.hpp                            | 100 +++++++
+ meson_options.txt                             |   2 +
+ service_files/meson.build                     |   2 +
+ .../xyz.openbmc_project.eventsensor.service   |  12 +
+ .../xyz.openbmc_project.gpiosensor.service    |  12 +
+ src/EventMain.cpp                             | 250 ++++++++++++++++++
+ src/EventSensor.cpp                           | 144 ++++++++++
+ src/GpioMain.cpp                              | 250 ++++++++++++++++++
+ src/GpioSensor.cpp                            | 214 +++++++++++++++
+ src/meson.build                               |  31 +++
+ 13 files changed, 1083 insertions(+)
+ create mode 100644 include/EventSensor.hpp
+ create mode 100644 include/GpioSensor.hpp
+ create mode 100644 service_files/xyz.openbmc_project.eventsensor.service
+ create mode 100644 service_files/xyz.openbmc_project.gpiosensor.service
+ create mode 100644 src/EventMain.cpp
+ create mode 100644 src/EventSensor.cpp
+ create mode 100644 src/GpioMain.cpp
+ create mode 100644 src/GpioSensor.cpp
+
+diff --git a/.gitignore b/.gitignore
+index e0886a4a..1a93ecbd 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -6,3 +6,4 @@ subprojects/*
+ 
+ .vscode
+ .idea/
++test/
+diff --git a/include/EventSensor.hpp b/include/EventSensor.hpp
+new file mode 100644
+index 00000000..11d9fced
+--- /dev/null
++++ b/include/EventSensor.hpp
+@@ -0,0 +1,28 @@
++#pragma once
++
++#include <sdbusplus/asio/object_server.hpp>
++#include <sensor.hpp>
++
++class EventSensor : public DiscSensor
++{
++  public:
++    EventSensor(const std::string& path, const std::string& objectType,
++                sdbusplus::asio::object_server& objectServer,
++                boost::asio::io_service& io, const std::string& sensorName,
++                const std::string& sensorConfiguration, uint16_t EvStat,
++                const std::string& sensorUnit, uint8_t DType, uint8_t EventType,
++                uint8_t EventOffset);
++
++    ~EventSensor();
++
++  private:
++    sdbusplus::asio::object_server& objServer;
++    boost::asio::deadline_timer waitTimer;
++    std::string path;
++    unsigned int errCount;
++    uint8_t DType;
++    uint8_t EventType;
++    uint8_t EventOffset;
++    void setupRead(void);
++    void handleResponse(const boost::system::error_code& err);
++};
+diff --git a/include/GpioSensor.hpp b/include/GpioSensor.hpp
+new file mode 100644
+index 00000000..6aadca29
+--- /dev/null
++++ b/include/GpioSensor.hpp
+@@ -0,0 +1,37 @@
++#pragma once
++
++#include <boost/asio/streambuf.hpp>
++#include <gpiod.hpp>
++#include <sdbusplus/asio/object_server.hpp>
++#include <sensor.hpp>
++
++class GpioSensor : public DiscSensor, public std::enable_shared_from_this<GpioSensor>
++{
++  public:
++    GpioSensor(const std::string& path, const std::string& objectType,
++               sdbusplus::asio::object_server& objectServer,
++               boost::asio::io_service& io, const std::string& sensorName,
++               const std::string& sensorConfiguration, uint16_t EvStat,
++               const std::string& sensorUnit, uint8_t DType, uint8_t EventType,
++               uint8_t EventOffset);
++
++    ~GpioSensor();
++    bool requestGPIOEvents(void);
++
++  private:
++    sdbusplus::asio::object_server& objServer;
++    boost::asio::posix::stream_descriptor gpioEventDescriptor;
++    boost::asio::deadline_timer waitTimer;
++    boost::asio::streambuf readBuf;
++    std::string path;
++    unsigned int errCount;
++    uint8_t DType;
++    uint8_t EventType;
++    uint8_t EventOffset;
++    gpiod::line gpioLine;
++    void gpioEventHandler(bool state);
++    void waitForGPIOEvent(const std::string& name, gpiod::line& line,
++                          boost::asio::posix::stream_descriptor& event);
++    // void setupRead(void);
++    // void handleResponse(const boost::system::error_code& err);
++};
+diff --git a/include/sensor.hpp b/include/sensor.hpp
+index abc6d826..64e8adf5 100644
+--- a/include/sensor.hpp
++++ b/include/sensor.hpp
+@@ -587,3 +587,103 @@ struct Sensor
+         internalSet = false;
+     }
+ };
++
++struct DiscSensor
++{
++    DiscSensor(const std::string& name, const std::string& configurationPath,
++               const std::string& objectType, const double max,
++               const double min, uint16_t EvStat,
++               const std::string& sensorUnit) :
++        name(name),
++        configurationPath(configurationPath), objectType(objectType),
++        eventStat(EvStat), Unit(sensorUnit), maxValue(max), minValue(min),
++        hysteresis((max - min) * 0.01)
++    {}
++    virtual ~DiscSensor() = default;
++    std::string name;
++    std::string configurationPath;
++    std::string objectType;
++    uint16_t eventStat;
++    std::string Unit;
++    double maxValue;
++    double minValue;
++    std::shared_ptr<sdbusplus::asio::dbus_interface> sensorInterface;
++    std::shared_ptr<sdbusplus::asio::dbus_interface> discreteInterfaceState;
++    std::shared_ptr<sdbusplus::asio::dbus_interface> association;
++    double value = std::numeric_limits<double>::quiet_NaN();
++    bool overriddenState = false;
++    bool internalSet = false;
++    double hysteresis;
++
++    int setSensorValue(const double& newValue, double& oldValue)
++    {
++        if (!internalSet)
++        {
++            oldValue = newValue;
++            overriddenState = true;
++            // check thresholds for external set
++            value = newValue;
++            value == 0 ? discreteInterfaceState->set_property(
++                             "ActiveAlarmState",
++                             std::vector<uint8_t>({0x00, 0xFF, 0xFF}))
++                       : discreteInterfaceState->set_property(
++                             "ActiveAlarmState",
++                             std::vector<uint8_t>({0x01, 0xFF, 0xFF}));
++        }
++        else if (!overriddenState)
++        {
++            oldValue = newValue;
++        }
++        return 1;
++    }
++
++    void
++        setInitialProperties()
++    {
++        createAssociation(association, configurationPath);
++
++        sensorInterface->register_property("MaxValue", maxValue);
++        sensorInterface->register_property("MinValue", minValue);
++        sensorInterface->register_property("EvStat", eventStat);
++        sensorInterface->register_property("SensorStat", false);
++        sensorInterface->register_property("Unit", Unit);
++        sensorInterface->register_property(
++            "Value", value, [&](const double& newValue, double& oldValue) {
++                return setSensorValue(newValue, oldValue);
++            });
++
++        if (!sensorInterface->initialize())
++        {
++            std::cerr << "error initializing value interface\n";
++        }
++        if (discreteInterfaceState && !discreteInterfaceState->initialize())
++        {
++            std::cerr << "error initializing warning threshold interface\n";
++        }
++    }
++    void updateValue(const double& newValue)
++    {
++        // Ignore if overriding is enabled
++        if (!overriddenState)
++        {
++            // Indicate that it is internal set call
++            internalSet = true;
++            sensorInterface->set_property("Value", newValue);
++            newValue == 0 ? discreteInterfaceState->set_property(
++                                "ActiveAlarmState",
++                                std::vector<uint8_t>({0x00, 0xFF, 0xFF}))
++                          : discreteInterfaceState->set_property(
++                                "ActiveAlarmState",
++                                std::vector<uint8_t>({0x01, 0xFF, 0xFF}));
++            //            sensorInterface->set_property("SensorStat", false);
++            value = newValue;
++
++            internalSet = false;
++            double diff = std::abs(value - newValue);
++            if (std::isnan(diff) || diff > hysteresis)
++            {
++                value = newValue;
++            }
++        }
++    }
++};
+diff --git a/meson_options.txt b/meson_options.txt
+index f9d25e71..74d65832 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -9,6 +9,8 @@ option('mcu', type: 'feature', value: 'enabled', description: 'Enable MCU sensor
+ option('nvme', type: 'feature', value: 'enabled', description: 'Enable NVMe sensor.',)
+ option('psu', type: 'feature', value: 'enabled', description: 'Enable PSU sensor.',)
+ option('external', type: 'feature', value: 'enabled', description: 'Enable External sensor.',)
++option('dig-gpio', type: 'feature', value: 'enabled', description: 'Enables intialling digital gpio sensor',)
++option('disc-event', type: 'feature', value: 'enabled', description: 'Enables installing discrete event sensor',)
+ option('tests', type: 'feature', value: 'enabled', description: 'Build tests.',)
+ option('validate-unsecure-feature', type : 'feature', value : 'disabled', description : 'Enables unsecure features required by validation. Note: mustbe turned off for production images.',)
+ option('insecure-sensor-override', type : 'feature', value : 'disabled', description : 'Enables Sensor override feature without any check.',)
+diff --git a/service_files/meson.build b/service_files/meson.build
+index 37bb2615..657a1ef7 100644
+--- a/service_files/meson.build
++++ b/service_files/meson.build
+@@ -10,6 +10,8 @@ unit_files = [
+     ['nvme', 'xyz.openbmc_project.nvmesensor.service'],
+     ['psu', 'xyz.openbmc_project.psusensor.service'],
+     ['external', 'xyz.openbmc_project.externalsensor.service'],
++    ['dig-gpio', 'xyz.openbmc_project.gpiosensor.service'],
++    ['disc-event', 'xyz.openbmc_project.eventsensor.service'],
+ ]
+ 
+ foreach tuple : unit_files
+diff --git a/service_files/xyz.openbmc_project.eventsensor.service b/service_files/xyz.openbmc_project.eventsensor.service
+new file mode 100644
+index 00000000..663a1987
+--- /dev/null
++++ b/service_files/xyz.openbmc_project.eventsensor.service
+@@ -0,0 +1,12 @@
++[Unit]
++Description=Event Sensor
++StopWhenUnneeded=false
++
++[Service]
++Restart=always
++RestartSec=5
++ExecStart=/usr/bin/eventsensor
++
++[Install]
++WantedBy=multi-user.target
++
+diff --git a/service_files/xyz.openbmc_project.gpiosensor.service b/service_files/xyz.openbmc_project.gpiosensor.service
+new file mode 100644
+index 00000000..b60b7560
+--- /dev/null
++++ b/service_files/xyz.openbmc_project.gpiosensor.service
+@@ -0,0 +1,12 @@
++[Unit]
++Description=Gpio Sensor
++StopWhenUnneeded=false
++
++[Service]
++Restart=always
++RestartSec=5
++ExecStart=/usr/bin/gpiosensor
++
++[Install]
++WantedBy=multi-user.target
++
+diff --git a/src/EventMain.cpp b/src/EventMain.cpp
+new file mode 100644
+index 00000000..5daae50f
+--- /dev/null
++++ b/src/EventMain.cpp
+@@ -0,0 +1,250 @@
++/*
++//
++// Auther: selvaganapathim
++// Email : selvaganapathim@amiindia.co.in
++//
++*/
++#include <EventSensor.hpp>
++#include <Utils.hpp>
++#include <boost/algorithm/string/predicate.hpp>
++#include <boost/algorithm/string/replace.hpp>
++#include <boost/container/flat_set.hpp>
++#include <sdbusplus/asio/connection.hpp>
++#include <sdbusplus/asio/object_server.hpp>
++
++#include <filesystem>
++#include <fstream>
++#include <regex>
++
++static constexpr bool DEBUG = false;
++
++namespace fs = std::filesystem;
++static constexpr std::array<const char*, 1> sensorTypes = {
++    "xyz.openbmc_project.Configuration.Discevent"};
++
++void createSensors(
++    boost::asio::io_service& io, sdbusplus::asio::object_server& objectServer,
++    boost::container::flat_map<std::string, std::unique_ptr<EventSensor>>&
++        sensors,
++    std::shared_ptr<sdbusplus::asio::connection>& dbusConnection,
++    const std::unique_ptr<boost::container::flat_set<std::string>>&
++        sensorsChanged)
++{
++    bool firstScan = sensorsChanged == nullptr;
++    // use new data the first time, then refresh
++    ManagedObjectType sensorConfigurations;
++    bool useCache = false;
++    for (const char* type : sensorTypes)
++    {
++        if (!getSensorConfiguration(type, dbusConnection, sensorConfigurations,
++                                    useCache))
++        {
++            std::cerr << "error communicating to entity manager\n";
++            return;
++        }
++        useCache = true;
++    }
++
++    // iterate through all found Digital sensors, and try to match them with
++    // configuration
++    const SensorData* sensorData = nullptr;
++    const std::string* interfacePath = nullptr;
++    const char* sensorType = nullptr;
++    const std::pair<std::string,
++                    boost::container::flat_map<std::string, BasicVariantType>>*
++        baseConfiguration = nullptr;
++    for (const std::pair<sdbusplus::message::object_path, SensorData>& sensor :
++         sensorConfigurations)
++    {
++        sensorData = &(sensor.second);
++        for (const char* type : sensorTypes)
++        {
++            auto sensorBase = sensorData->find(type);
++            if (sensorBase != sensorData->end())
++            {
++                baseConfiguration = &(*sensorBase);
++                sensorType = type;
++                break;
++            }
++        }
++        if (baseConfiguration == nullptr)
++        {
++            std::cerr << "error finding base configuration for "
++                      << "Discrete"
++                      << "\n";
++            continue;
++        }
++
++        interfacePath = &(sensor.first.str);
++
++        if (interfacePath == nullptr)
++        {
++            std::cerr << "failed to find match for "
++                      << "Discrete"
++                      << "\n";
++            continue;
++        }
++
++        auto findSensorName = baseConfiguration->second.find("Name");
++        if (findSensorName == baseConfiguration->second.end())
++        {
++            std::cerr << "could not determine configuration name for "
++                      << "discrete"
++                      << "\n";
++            continue;
++        }
++        std::string sensorName = std::get<std::string>(findSensorName->second);
++
++        auto findSensorUnit = baseConfiguration->second.find("Unit");
++        if (findSensorUnit == baseConfiguration->second.end())
++        {
++            std::cerr << "could not determine Unit for "
++                      << "Discrete"
++                      << "\n";
++            continue;
++        }
++        std::string sensorUnit = std::get<std::string>(findSensorUnit->second);
++
++        auto findEvStat = baseConfiguration->second.find("EvStat");
++        if (findEvStat == baseConfiguration->second.end())
++        {
++            std::cerr << "Base configuration missing EvStat"
++                      << baseConfiguration->first << "\n";
++            continue;
++        }
++
++        uint16_t EvStat =
++            std::visit(VariantToUnsignedIntVisitor(), findEvStat->second);
++
++        // Digital Type, IPMI sensor type code, 42.2
++        auto findSensorDType = baseConfiguration->second.find("DType");
++        if (findSensorDType == baseConfiguration->second.end())
++        {
++            std::cerr << "could not determine configuration DType for "
++                      << "Discrete"
++                      << "\n";
++            continue;
++        }
++        uint8_t sensorDType =
++            std::visit(VariantToUnsignedIntVisitor(), findSensorDType->second);
++
++        // Digital Event Type, IPMI 42.1, Table42, Event/reading type code,
++        // ex: 0x6F: sensor-specific
++        auto findSensorEventType = baseConfiguration->second.find("EventType");
++        if (findSensorEventType == baseConfiguration->second.end())
++        {
++            std::cerr << "could not determine configuration EventType for "
++                      << "Discrete"
++                      << "\n";
++            continue;
++        }
++        uint8_t sensorEventType = std::visit(VariantToUnsignedIntVisitor(),
++                                             findSensorEventType->second);
++        // Digital Event Offset, IPMI 42.2 sensor specific Offset
++        auto findSensorEventOffset =
++            baseConfiguration->second.find("EventOffset");
++        if (findSensorEventOffset == baseConfiguration->second.end())
++        {
++            std::cerr << "could not determine configuration EventType for "
++                      << "Discrete"
++                      << "\n";
++            continue;
++        }
++        uint8_t sensorEventOffset = std::visit(VariantToUnsignedIntVisitor(),
++                                               findSensorEventOffset->second);
++
++        // on rescans, only update sensors we were signaled by
++        auto findSensor = sensors.find(sensorName);
++        if (!firstScan && findSensor != sensors.end())
++        {
++            bool found = false;
++            for (auto it = sensorsChanged->begin(); it != sensorsChanged->end();
++                 it++)
++            {
++                if (boost::ends_with(*it, findSensor->second->name))
++                {
++                    sensorsChanged->erase(it);
++                    findSensor->second = nullptr;
++                    found = true;
++                    break;
++                }
++            }
++            if (!found)
++            {
++                continue;
++            }
++        }
++        //        std::vector<discretes::Discrete> sensorDiscretes;
++        //        if (!parseDiscretesFromConfig(*sensorData, sensorDiscretes))
++        //        {
++        //            std::cerr << "error populating discretes for " <<
++        //            sensorName
++        //                      << "\n";
++        //        }
++
++        // std::string
++        // sensorPath="/sys/class/gpio/gpio"+std::to_string(index)+"/value";
++        std::string sensorPath;
++
++        sensors[sensorName] = std::make_unique<EventSensor>(
++            sensorPath, sensorType, objectServer, io,
++            sensorName, *interfacePath, EvStat, sensorUnit, sensorDType,
++            sensorEventType, sensorEventOffset);
++    }
++}
++int main()
++{
++    boost::asio::io_service io;
++    auto systemBus = std::make_shared<sdbusplus::asio::connection>(io);
++    systemBus->request_name("xyz.openbmc_project.Eventsensor");
++    sdbusplus::asio::object_server objectServer(systemBus);
++    boost::container::flat_map<std::string, std::unique_ptr<EventSensor>>
++        sensors;
++    std::vector<std::unique_ptr<sdbusplus::bus::match::match>> matches;
++    std::unique_ptr<boost::container::flat_set<std::string>> sensorsChanged =
++        std::make_unique<boost::container::flat_set<std::string>>();
++
++    io.post([&]() {
++        createSensors(io, objectServer, sensors, systemBus, nullptr);
++    });
++
++    boost::asio::deadline_timer filterTimer(io);
++    std::function<void(sdbusplus::message::message&)> eventHandler =
++        [&](sdbusplus::message::message& message) {
++            if (message.is_method_error())
++            {
++                std::cerr << "callback method error\n";
++                return;
++            }
++            sensorsChanged->insert(message.get_path());
++            // this implicitly cancels the timer
++            filterTimer.expires_from_now(boost::posix_time::seconds(1));
++
++            filterTimer.async_wait([&](const boost::system::error_code& ec) {
++                if (ec == boost::asio::error::operation_aborted)
++                {
++                    /* we were canceled*/
++                    return;
++                }
++                else if (ec)
++                {
++                    std::cerr << "timer error\n";
++                    return;
++                }
++                createSensors(io, objectServer, sensors, systemBus,
++                              sensorsChanged);
++            });
++        };
++
++    for (const char* type : sensorTypes)
++    {
++        auto match = std::make_unique<sdbusplus::bus::match::match>(
++            static_cast<sdbusplus::bus::bus&>(*systemBus),
++            "type='signal',member='PropertiesChanged',path_namespace='" +
++                std::string(inventoryPath) + "',arg0namespace='" + type + "'",
++            eventHandler);
++        matches.emplace_back(std::move(match));
++    }
++
++    io.run();
++}
+diff --git a/src/EventSensor.cpp b/src/EventSensor.cpp
+new file mode 100644
+index 00000000..5b909d95
+--- /dev/null
++++ b/src/EventSensor.cpp
+@@ -0,0 +1,144 @@
++/*
++//
++// Auther: selvaganapathim
++// Email : selvaganapathim@amiindia.co.in
++//
++*/
++
++#include <unistd.h>
++
++#include <EventSensor.hpp>
++#include <boost/algorithm/string/predicate.hpp>
++#include <boost/algorithm/string/replace.hpp>
++#include <boost/date_time/posix_time/posix_time.hpp>
++#include <sdbusplus/asio/connection.hpp>
++#include <sdbusplus/asio/object_server.hpp>
++
++#include <iostream>
++#include <limits>
++#include <string>
++static constexpr unsigned int sensorPollMs = 500;
++static constexpr unsigned int sensorScaleFactor = 1000;
++static constexpr unsigned int warnAfterErrorCount = 10;
++
++static constexpr double maxReading = 127;
++static constexpr double minReading = -128;
++EventSensor::EventSensor(const std::string& path, const std::string& objectType,
++                         sdbusplus::asio::object_server& objectServer,
++                         boost::asio::io_service& io,
++                         const std::string& sensorName,
++                         const std::string& sensorConfiguration,
++                         uint16_t EvStat, const std::string& sensorUnit,
++                         uint8_t DType, uint8_t EventType,
++                         uint8_t EventOffset) :
++    DiscSensor(boost::replace_all_copy(sensorName, " ", "_"),
++               sensorConfiguration, objectType, maxReading, minReading, EvStat,
++               sensorUnit),
++    objServer(objectServer), waitTimer(io), path(path), errCount(0)
++{
++
++    sensorInterface = objectServer.add_interface(
++        "/xyz/openbmc_project/sensors/eventsensor/" + name,
++        "xyz.openbmc_project.Sensor.Value");
++
++    discreteInterfaceState = objectServer.add_interface(
++        "/xyz/openbmc_project/sensors/eventsensor/" + name,
++        "xyz.openbmc_project.Sensor.Discrete.State");
++
++    std::vector<uint8_t> al = {0xFF, 0xFF, 0xFF};
++    discreteInterfaceState->register_property(
++        "ActiveAlarmState", al,
++        [&](const std::vector<uint8_t>& request,
++            std::vector<uint8_t>& oldValue) {
++            oldValue = request;
++            al = request;
++            return 1;
++        });
++
++    association = objectServer.add_interface(
++        "/xyz/openbmc_project/sensors/eventsensor/" + name,
++        association::interface);
++    sensorInterface->register_property("DType", DType);
++    sensorInterface->register_property("EventType", EventType);
++    sensorInterface->register_property("EventOffset", EventOffset);
++    setInitialProperties();
++    // setupRead();
++}
++
++EventSensor::~EventSensor()
++{
++    // close the input dev to cancel async operations
++    //    inputDev.close();
++    waitTimer.cancel();
++    objServer.remove_interface(discreteInterfaceState);
++    objServer.remove_interface(sensorInterface);
++    objServer.remove_interface(association);
++}
++/*void DiscreteSensor::setupRead(void)
++{
++    boost::asio::async_read_until(
++        inputDev, readBuf, '\n',
++        [&](const boost::system::error_code& ec,
++            std::size_t) { handleResponse(ec); });
++}
++
++void DiscreteSensor::handleResponse(const boost::system::error_code& err)
++{
++    if (err == boost::system::errc::bad_file_descriptor)
++    {
++       return; // we're being destroyed
++    }
++    std::istream responseStream(&readBuf);
++    if (!err)
++    {
++        std::string response;
++        std::getline(responseStream, response);
++        try
++        {
++            float nvalue = std::stof(response);
++            //nvalue = !value;
++            if (static_cast<double>(nvalue) != value)
++            {
++                updateValue(nvalue);
++            }
++            errCount = 0;
++        }
++        catch (const std::invalid_argument&)
++        {
++            errCount++;
++        }
++    }
++    else
++    {
++        errCount++;
++    }
++
++    // only print once
++    if (errCount == warnAfterErrorCount)
++    {
++        std::cerr << "Failure to read sensor " << name << " at " << path
++                  << " ec:" << err << "\n";
++    }
++
++    if (errCount >= warnAfterErrorCount)
++    {
++        updateValue(0);
++    }
++    responseStream.clear();
++    inputDev.close();
++    int fd = open(path.c_str(), O_RDONLY);
++    if (fd <= 0)
++    {
++        return; // we're no longer valid
++    }
++    inputDev.assign(fd);
++    waitTimer.expires_from_now(boost::posix_time::milliseconds(sensorPollMs));
++    waitTimer.async_wait([&](const boost::system::error_code& ec) {
++        if (ec == boost::asio::error::operation_aborted)
++       {
++            return; // we're being canceled
++        }
++        setupRead();
++    });
++}
++*/
+diff --git a/src/GpioMain.cpp b/src/GpioMain.cpp
+new file mode 100644
+index 00000000..44cfe7a6
+--- /dev/null
++++ b/src/GpioMain.cpp
+@@ -0,0 +1,250 @@
++/*
++//
++// Auther: selvaganapathim
++// Email : selvaganapathim@amiindia.co.in
++//
++*/
++
++#include <GpioSensor.hpp>
++#include <Utils.hpp>
++#include <boost/algorithm/string/predicate.hpp>
++#include <boost/algorithm/string/replace.hpp>
++#include <boost/container/flat_set.hpp>
++#include <sdbusplus/asio/connection.hpp>
++#include <sdbusplus/asio/object_server.hpp>
++
++#include <filesystem>
++#include <fstream>
++#include <regex>
++
++static constexpr bool DEBUG = false;
++
++namespace fs = std::filesystem;
++static constexpr std::array<const char*, 1> sensorTypes = {
++    "xyz.openbmc_project.Configuration.Digitalgpio"};
++
++void createSensors(
++    boost::asio::io_service& io, sdbusplus::asio::object_server& objectServer,
++    boost::container::flat_map<std::string, std::shared_ptr<GpioSensor>>&
++        sensors,
++    std::shared_ptr<sdbusplus::asio::connection>& dbusConnection,
++    const std::unique_ptr<boost::container::flat_set<std::string>>&
++        sensorsChanged)
++{
++    bool firstScan = sensorsChanged == nullptr;
++    // use new data the first time, then refresh
++    ManagedObjectType sensorConfigurations;
++    bool useCache = false;
++    for (const char* type : sensorTypes)
++    {
++        if (!getSensorConfiguration(type, dbusConnection, sensorConfigurations,
++                                    useCache))
++        {
++            std::cerr << "error communicating to entity manager\n";
++            return;
++        }
++        useCache = true;
++    }
++
++    // boost::container::flat_set<std::string> directories;
++
++    const SensorData* sensorData = nullptr;
++    const std::string* interfacePath = nullptr;
++    const char* sensorType = nullptr;
++    const std::pair<std::string,
++                    boost::container::flat_map<std::string, BasicVariantType>>*
++        baseConfiguration = nullptr;
++
++    for (const std::pair<sdbusplus::message::object_path, SensorData>& sensor :
++         sensorConfigurations)
++    {
++        sensorData = &(sensor.second);
++        for (const char* type : sensorTypes)
++        {
++            auto sensorBase = sensorData->find(type);
++            if (sensorBase != sensorData->end())
++            {
++                baseConfiguration = &(*sensorBase);
++                sensorType = type;
++                break;
++            }
++        }
++        if (baseConfiguration == nullptr)
++        {
++            continue;
++        }
++        auto findLineName = baseConfiguration->second.find("LineName");
++
++        if (findLineName == baseConfiguration->second.end())
++        {
++            std::cerr << "error finding LineName in configuration";
++            continue;
++        }
++        std::string gpioLineName = std::get<std::string>(findLineName->second);
++
++        interfacePath = &(sensor.first.str);
++        if (interfacePath == nullptr)
++        {
++            std::cerr << "failed to find match for " << gpioLineName << "\n";
++            continue;
++        }
++
++        auto findSensorName = baseConfiguration->second.find("Name");
++        if (findSensorName == baseConfiguration->second.end())
++        {
++            std::cerr << "could not determine configuration name for "
++                      << gpioLineName << "\n";
++            continue;
++        }
++        std::string sensorName = std::get<std::string>(findSensorName->second);
++
++        auto findSensorUnit = baseConfiguration->second.find("Unit");
++        if (findSensorUnit == baseConfiguration->second.end())
++        {
++            std::cerr << "could not determine Unit for " << gpioLineName << "\n";
++            continue;
++        }
++        std::string sensorUnit = std::get<std::string>(findSensorUnit->second);
++        auto findEvStat = baseConfiguration->second.find("EvStat");
++        if (findEvStat == baseConfiguration->second.end())
++        {
++            std::cerr << "Base configuration missing EvStat"
++                      << baseConfiguration->first << "\n";
++            continue;
++        }
++
++        uint16_t EvStat =
++            std::visit(VariantToUnsignedIntVisitor(), findEvStat->second);
++
++        // Digital Type, IPMI sensor type code, 42.2
++        auto findSensorDType = baseConfiguration->second.find("DType");
++        if (findSensorDType == baseConfiguration->second.end())
++        {
++            std::cerr << "could not determine configuration DType for "
++                      << gpioLineName << "\n";
++            continue;
++        }
++        uint8_t sensorDType =
++            std::visit(VariantToUnsignedIntVisitor(), findSensorDType->second);
++
++        // Digital Event Type, IPMI 42.1, Table42, Event/reading type code,
++        // ex: 0x6F: sensor-specific
++        auto findSensorEventType = baseConfiguration->second.find("EventType");
++        if (findSensorEventType == baseConfiguration->second.end())
++        {
++            std::cerr << "could not determine configuration EventType for "
++                      << gpioLineName << "\n";
++            continue;
++        }
++        uint8_t sensorEventType = std::visit(VariantToUnsignedIntVisitor(),
++                                             findSensorEventType->second);
++
++        // Digital Event Offset, IPMI 42.2 sensor specific Offset
++        auto findSensorEventOffset =
++            baseConfiguration->second.find("EventOffset");
++        if (findSensorEventOffset == baseConfiguration->second.end())
++        {
++            std::cerr << "could not determine configuration EventType for "
++                      << gpioLineName << "\n";
++            continue;
++        }
++        uint8_t sensorEventOffset = std::visit(VariantToUnsignedIntVisitor(),
++                                               findSensorEventOffset->second);
++
++        // on rescans, only update sensors we were signaled by
++        auto findSensor = sensors.find(sensorName);
++        if (!firstScan && findSensor != sensors.end())
++        {
++            bool found = false;
++            for (auto it = sensorsChanged->begin(); it != sensorsChanged->end();
++                 it++)
++            {
++                if (boost::ends_with(*it, findSensor->second->name))
++                {
++                    sensorsChanged->erase(it);
++                    findSensor->second = nullptr;
++                    found = true;
++                    break;
++                }
++            }
++            if (!found)
++            {
++                continue;
++            }
++        }
++        //        std::vector<discretes::Discrete> sensorDiscretes;
++        //        if (!parseDiscretesFromConfig(*sensorData, sensorDiscretes))
++        //        {
++        //            std::cerr << "error populating discretes for " <<
++        //            sensorName
++        //                      << "\n";
++        //        }
++
++
++        sensors[sensorName] = std::make_shared<GpioSensor>(
++            gpioLineName, sensorType, objectServer, io, sensorName,
++            *interfacePath, EvStat, sensorUnit, sensorDType, sensorEventType,
++            sensorEventOffset);
++        if (!sensors[sensorName]->requestGPIOEvents())
++        {
++            sensors.erase(sensorName);
++        }
++    }
++}
++
++int main()
++{
++    boost::asio::io_service io;
++    auto systemBus = std::make_shared<sdbusplus::asio::connection>(io);
++    systemBus->request_name("xyz.openbmc_project.Gpiosensor");
++    sdbusplus::asio::object_server objectServer(systemBus);
++    boost::container::flat_map<std::string, std::shared_ptr<GpioSensor>>
++        sensors;
++    std::vector<std::unique_ptr<sdbusplus::bus::match::match>> matches;
++    std::unique_ptr<boost::container::flat_set<std::string>> sensorsChanged =
++        std::make_unique<boost::container::flat_set<std::string>>();
++
++    io.post([&]() {
++        createSensors(io, objectServer, sensors, systemBus, nullptr);
++    });
++
++    boost::asio::deadline_timer filterTimer(io);
++    std::function<void(sdbusplus::message::message&)> eventHandler =
++        [&](sdbusplus::message::message& message) {
++            if (message.is_method_error())
++            {
++                std::cerr << "callback method error\n";
++                return;
++            }
++            sensorsChanged->insert(message.get_path());
++            // this implicitly cancels the timer
++            filterTimer.expires_from_now(boost::posix_time::seconds(1));
++
++            filterTimer.async_wait([&](const boost::system::error_code& ec) {
++                if (ec == boost::asio::error::operation_aborted)
++                {
++                    /* we were canceled*/
++                    return;
++                }
++                else if (ec)
++                {
++                    std::cerr << "timer error\n";
++                    return;
++                }
++                createSensors(io, objectServer, sensors, systemBus,
++                              sensorsChanged);
++            });
++        };
++
++    for (const char* type : sensorTypes)
++    {
++        auto match = std::make_unique<sdbusplus::bus::match::match>(
++            static_cast<sdbusplus::bus::bus&>(*systemBus),
++            "type='signal',member='PropertiesChanged',path_namespace='" +
++                std::string(inventoryPath) + "',arg0namespace='" + type + "'",
++            eventHandler);
++        matches.emplace_back(std::move(match));
++    }
++
++    io.run();
++}
+diff --git a/src/GpioSensor.cpp b/src/GpioSensor.cpp
+new file mode 100644
+index 00000000..acfbad59
+--- /dev/null
++++ b/src/GpioSensor.cpp
+@@ -0,0 +1,214 @@
++/*
++//
++// Auther: selvaganapathim
++// Email : selvaganapathim@amiindia.co.in
++//
++*/
++
++#include <unistd.h>
++
++#include <GpioSensor.hpp>
++//#include <boost/algorithm/string/predicate.hpp>
++//#include <boost/algorithm/string/replace.hpp>
++#include <boost/asio/posix/stream_descriptor.hpp>
++#include <boost/asio/read_until.hpp>
++#include <boost/date_time/posix_time/posix_time.hpp>
++#include <sdbusplus/asio/connection.hpp>
++#include <sdbusplus/asio/object_server.hpp>
++
++#include <iostream>
++#include <limits>
++#include <string>
++
++static constexpr unsigned int sensorPollMs = 500;
++static constexpr unsigned int sensorScaleFactor = 1000;
++static constexpr unsigned int warnAfterErrorCount = 10;
++
++static constexpr double maxReading = 127;
++static constexpr double minReading = -128;
++
++GpioSensor::GpioSensor(const std::string& path, const std::string& objectType,
++                       sdbusplus::asio::object_server& objectServer,
++                       boost::asio::io_service& io,
++                       const std::string& sensorName,
++                       const std::string& sensorConfiguration, uint16_t EvStat,
++                       const std::string& sensorUnit, uint8_t DType,
++                       uint8_t EventType, uint8_t EventOffset) :
++    DiscSensor(boost::replace_all_copy(sensorName, " ", "_"),
++               sensorConfiguration, objectType, maxReading, minReading, EvStat,
++               sensorUnit),
++    objServer(objectServer), gpioEventDescriptor(io), waitTimer(io), path(path),
++    errCount(0)
++{
++    sensorInterface = objectServer.add_interface(
++        "/xyz/openbmc_project/sensors/gpiosensor/" + name,
++        "xyz.openbmc_project.Sensor.Value");
++
++    discreteInterfaceState = objectServer.add_interface(
++        "/xyz/openbmc_project/sensors/gpiosensor/" + name,
++        "xyz.openbmc_project.Sensor.Discrete.State");
++
++    std::vector<uint8_t> al = {0xFF, 0xFF, 0xFF};
++
++    discreteInterfaceState->register_property("ActiveAlarmState", al);
++
++    association = objectServer.add_interface(
++        "/xyz/openbmc_project/sensors/gpiosensor/" + name,
++        association::interface);
++    sensorInterface->register_property("DType", DType);
++    sensorInterface->register_property("EventType", EventType);
++    sensorInterface->register_property("EventOffset", EventOffset);
++    setInitialProperties();
++    // setupRead();
++}
++
++GpioSensor::~GpioSensor()
++{
++    // close the input dev to cancel async operations
++    gpioEventDescriptor.close();
++    waitTimer.cancel();
++    objServer.remove_interface(discreteInterfaceState);
++    objServer.remove_interface(sensorInterface);
++    objServer.remove_interface(association);
++}
++
++/*
++void GpioSensor::setupRead(void)
++{
++    boost::asio::async_read_until(
++        inputDev, readBuf, '\n',
++        [&](const boost::system::error_code& ec,
++            std::size_t) { handleResponse(ec); });
++}
++
++void GpioSensor::handleResponse(const boost::system::error_code& err)
++{
++    if (err == boost::system::errc::bad_file_descriptor)
++    {
++        return; // we're being destroyed
++    }
++    std::istream responseStream(&readBuf);
++    if (!err)
++    {
++        std::string response;
++        std::getline(responseStream, response);
++        try
++        {
++            float nvalue = std::stof(response);
++            // nvalue = !value;
++            if (static_cast<double>(nvalue) != value)
++            {
++                updateValue(nvalue);
++            }
++            errCount = 0;
++        }
++        catch (const std::invalid_argument&)
++        {
++            errCount++;
++        }
++    }
++    else
++    {
++        errCount++;
++    }
++
++    // only print once
++    if (errCount == warnAfterErrorCount)
++    {
++        std::cerr << "Failure to read sensor " << name << " at " << path
++                  << " ec:" << err << "\n";
++    }
++
++    if (errCount >= warnAfterErrorCount)
++    {
++        updateValue(0);
++    }
++    responseStream.clear();
++    inputDev.close();
++    int fd = open(path.c_str(), O_RDONLY);
++    if (fd <= 0)
++    {
++        return; // we're no longer valid
++    }
++    inputDev.assign(fd);
++    waitTimer.expires_from_now(boost::posix_time::milliseconds(sensorPollMs));
++    waitTimer.async_wait([&](const boost::system::error_code& ec) {
++        if (ec == boost::asio::error::operation_aborted)
++        {
++            return; // we're being canceled
++        }
++        setupRead();
++    });
++}
++*/
++
++void GpioSensor::gpioEventHandler(bool state)
++{
++    double nvalue = static_cast<double>(state);
++    if (value != nvalue)
++    {
++        updateValue(nvalue);
++    }
++}
++
++void GpioSensor::waitForGPIOEvent(const std::string& name, gpiod::line& line,
++                                  boost::asio::posix::stream_descriptor& event)
++{
++    std::weak_ptr<GpioSensor> weakRef = weak_from_this();
++    event.async_wait(
++        boost::asio::posix::stream_descriptor::wait_read,
++        [weakRef, &name, &line, &event](const boost::system::error_code ec) {
++            if (ec)
++            {
++                std::cerr << name << " fd handler error: " << ec.message()
++                          << "\n";
++                return;
++            }
++            std::shared_ptr<GpioSensor> self = weakRef.lock();
++            gpiod::line_event line_event = line.event_read();
++            if (!self)
++            {
++                std::cerr << name << "get async_wait self failed.\n";
++                return;
++            }
++            self->gpioEventHandler(line_event.event_type ==
++                                  gpiod::line_event::RISING_EDGE);
++            self->waitForGPIOEvent(name, line, event);
++        });
++}
++
++bool GpioSensor::requestGPIOEvents(void)
++{
++    // Find the GPIO line
++    gpioLine = gpiod::find_line(name);
++    if (!gpioLine)
++    {
++        std::cerr << "Failed to find the " << name << " line\n";
++        return false;
++    }
++
++    try
++    {
++        gpioLine.request(
++            {"gpio-sensor", gpiod::line_request::EVENT_BOTH_EDGES, {}});
++    }
++    catch (const std::exception& e)
++    {
++        std::cerr << "Failed to request events for " << path << ": " << e.what()
++                  << "\n";
++        return false;
++    }
++
++    int gpioLineFd = gpioLine.event_get_fd();
++    if (gpioLineFd < 0)
++    {
++        std::cerr << "Failed to get " << path << " fd"
++                  << "\n";
++        return false;
++    }
++
++    gpioEventDescriptor.assign(gpioLineFd);
++
++    waitForGPIOEvent(path, gpioLine, gpioEventDescriptor);
++    return true;
++}
+diff --git a/src/meson.build b/src/meson.build
+index 0fe5f563..7c04b53c 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -185,3 +185,34 @@ if get_option('external').enabled()
+         install: true,
+     )
+ endif
++
++if get_option('dig-gpio').enabled()
++    executable(
++        'gpiosensor',
++        'GpioSensor.cpp',
++        'GpioMain.cpp',
++        dependencies: [
++            default_deps,
++            gpiodcxx,
++            utils_dep,
++        ],
++        implicit_include_directories: false,
++        include_directories: '../include',
++        install: true,
++    )
++endif
++
++if get_option('disc-event').enabled()
++    executable(
++        'eventsensor',
++        'EventSensor.cpp',
++        'EventMain.cpp',
++        dependencies: [
++            default_deps,
++            utils_dep,
++        ],
++        implicit_include_directories: false,
++        include_directories: '../include',
++        install: true,
++    )
++endif
+\ No newline at end of file
+-- 
+2.17.1
+

@@ -1,0 +1,43 @@
+From 4caa1bf160a082263444cd26b1237606d6bd2ad7 Mon Sep 17 00:00:00 2001
+From: Brian Ma <chma0@nuvoton.com>
+Date: Thu, 25 Aug 2022 13:48:14 +0800
+Subject: [PATCH] Set Chassis Intrusion Sensor GPIO name
+
+---
+ arch/arm/boot/dts/nuvoton-npcm750-buv-runbmc.dts | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/arch/arm/boot/dts/nuvoton-npcm750-buv-runbmc.dts b/arch/arm/boot/dts/nuvoton-npcm750-buv-runbmc.dts
+index 41647efd543c..6bb024db7beb 100644
+--- a/arch/arm/boot/dts/nuvoton-npcm750-buv-runbmc.dts
++++ b/arch/arm/boot/dts/nuvoton-npcm750-buv-runbmc.dts
+@@ -364,12 +364,26 @@
+ 		reg = <0x21>;
+ 		gpio-controller;
+ 		#gpio-cells = <2>;
++		gpio-line-names =
++		"CHASSIS_INTRUSION", "CPU_MISSING_TEST","","","","","","",
++		"","","","","","","","";
++		Ex1_P0 {
++			gpios = <0 0>;
++			input;
++		};
++        Ex1_P1 {
++			gpios = <1 0>;
++			input;
++		};
+ 	};
+ 	pca9554@38 {
+ 		compatible = "nxp,pca9554";
+ 		reg = <0x38>;
+ 		gpio-controller;
+ 		#gpio-cells = <2>;
++		gpio-line-names =
++		"LED_ID1","LED_ID2","LED_ID3","LED_ID4",
++		"","","","";
+ 	};
+ 	ina219@40 {
+ 		compatible = "ti,ina219";
+-- 
+2.17.1
+
