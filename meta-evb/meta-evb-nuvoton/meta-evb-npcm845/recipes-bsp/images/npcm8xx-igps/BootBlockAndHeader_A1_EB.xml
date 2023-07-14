@@ -195,7 +195,7 @@
 			<offset>0x134</offset>       
 			<size>0x1</size> 
 		</config>
-		<content format='32bit'>0x04</content>  
+		<content format='32bit'>0x34</content>  
 	</BinField>
 	
 
@@ -490,7 +490,7 @@
 			<offset>0x14D</offset>       
 			<size>0x1</size> 
 		</config>
-		<content format='32bit'>0x00</content>
+		<content format='32bit'>0xBC</content>
 	</BinField>
 	
 	<BinField>
