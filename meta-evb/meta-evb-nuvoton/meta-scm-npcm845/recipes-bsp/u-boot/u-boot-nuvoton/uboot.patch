@@ -1,0 +1,45 @@
+diff --git a/board/nuvoton/arbel/arbel.c b/board/nuvoton/arbel/arbel.c
+index 44a3459ee1..7c9958df33 100644
+--- a/board/nuvoton/arbel/arbel.c
++++ b/board/nuvoton/arbel/arbel.c
+@@ -10,6 +10,7 @@
+ #include <asm/arch/cpu.h>
+ #include <asm/arch/espi.h>
+ #include <asm/arch/gcr.h>
++#include <asm/arch/rst.h>
+ #include <asm/gpio.h>
+ #include <asm/io.h>
+ #include <asm/mach-types.h>
+@@ -39,6 +40,15 @@ DECLARE_GLOBAL_DATA_PTR;
+ #define DRAM_4GB_ECC_SIZE	0xE00000000ULL
+ #define DRAM_4GB_SIZE		0x100000000ULL
+ 
++/* Reset control registers offset */
++#define WD0RCR	0x38
++#define WD1RCR	0x3c
++#define WD2RCR	0x40
++#define SWRSTC1	0x44
++#define SWRSTC2	0x48
++#define SWRSTC3	0x4c
++#define RCR_VAL	0x0300ef9d
++
+ #ifdef CONFIG_EXT_TPM2_SPI
+ #define CONFIG_TPM_SPI_BUS	5
+ #define CONFIG_TPM_SPI_CS	0
+@@ -106,6 +116,16 @@ static void arbel_clk_init(void)
+ 
+ int board_init(void)
+ {
++	u32 val;
++
++	val = npcm_get_reset_status();
++	// only update default RCRs at PORST && CORST
++	if ((val & PORST) && (val & CORST)) {
++		// we use WD0RCR for U-Boot and SWRST1 for Linux
++		writel(RCR_VAL, NPCM_CLK_BA + WD0RCR);
++		writel(RCR_VAL, NPCM_CLK_BA + SWRSTC1);
++		printf("update default RCRs\n");
++	}
+ 
+ 	arbel_clk_init();
+ 	arbel_eth_init();
