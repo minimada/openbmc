@@ -1,0 +1,38 @@
+From 57e9b63f5d72dd23e50974d0df85e4fadbddeb0a Mon Sep 17 00:00:00 2001
+From: Harsh Tyagi <harshtya@google.com>
+Date: Thu, 14 Dec 2023 19:42:46 +0000
+Subject: [PATCH] Update rde resource map
+
+---
+ rded/helper/resource_id_mapper.hpp | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/rded/helper/resource_id_mapper.hpp b/rded/helper/resource_id_mapper.hpp
+index cf9c015..ec7350e 100644
+--- a/rded/helper/resource_id_mapper.hpp
++++ b/rded/helper/resource_id_mapper.hpp
+@@ -179,13 +179,19 @@ std::unordered_map<std::string_view, uint32_t> resourceIdMap = {
+     {"/redfish/v1/UpdateService/FirmwareInventory", 0x000a0000},
+     {"/redfish/v1/UpdateService/FirmwareInventory/mbmc", 0x00090000},
+     {"/redfish/v1/Chassis/Tray/Controls", 0x000c0000},
+-    {"/redfish/v1/Chassis/Tray/Controls/HDD_pid", 0x000b0000},
++    {"/redfish/v1/Chassis/Tray/Controls/bmc_pid", 0x000b0000},
+     {"/redfish/v1/Chassis/Tray/Sensors/p12v_cem_imon", 0x00030040},
+     {"/redfish/v1/Chassis/Tray/Sensors/p12v_cem", 0x00030041},
+     {"/redfish/v1/Chassis/Tray/Sensors/mb_pwr_status", 0x00030042},
+     {"/redfish/v1/Chassis/Tray/Sensors/fan0_imon", 0x00030043},
+     {"/redfish/v1/Chassis/Tray/Sensors/fan1_imon", 0x00030044},
+-    {"/redfish/v1/Chassis/Tray/Controls/fans", 0x000b0001},
++    {"/redfish/v1/Chassis/Tray/Controls/lat_pid", 0x000b0001},
++    {"/redfish/v1/Chassis/Tray/Controls/ioc_pid", 0x000b0002},
++    {"/redfish/v1/Chassis/Tray/Controls/vr_pid", 0x000b0003},
++    {"/redfish/v1/Chassis/Tray/Controls/powerbrick_pid", 0x000b0004},
++    {"/redfish/v1/Chassis/Tray/Controls/hdd_max_pid", 0x000b0005},
++    {"/redfish/v1/Chassis/Tray/Controls/hdd_avg_pid", 0x000b0006},
++    {"/redfish/v1/Chassis/Tray/Controls/fans", 0x000b0007},
+     {"/redfish/v1/Storage", 0x000d0000},
+     {"/redfish/v1/Storage/SATA", 0x000e0000},
+     {"/redfish/v1/Storage/SATA/Controllers", 0x000f0000},
+-- 
+2.34.1
+

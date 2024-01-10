@@ -1,0 +1,1287 @@
+From 5024ec52966329abda49731054d18c2fb9c73726 Mon Sep 17 00:00:00 2001
+From: Harsh Tyagi <harshtya@google.com>
+Date: Thu, 30 Nov 2023 09:16:35 +0000
+Subject: [PATCH] Fix memory issues for rde
+
+---
+ rded/helper/discovery/base_discovery.cpp      |  68 ++-
+ rded/helper/discovery/base_discovery.hpp      |  15 +-
+ rded/helper/discovery/rde_discovery.cpp       | 107 ++--
+ rded/helper/discovery/rde_discovery.hpp       |  11 +-
+ rded/helper/mctpsetup.hpp                     |   5 +
+ rded/helper/rde_operation/rde_operation.cpp   |  20 +-
+ .../helper/rde_operation/rde_update_utils.cpp |  27 +-
+ rded/helper/resource_id_mapper.hpp            | 456 +++++++-----------
+ rded/rded.cpp                                 |  80 +--
+ 9 files changed, 418 insertions(+), 371 deletions(-)
+
+diff --git a/rded/helper/discovery/base_discovery.cpp b/rded/helper/discovery/base_discovery.cpp
+index bbd4b3634..1a21b802a 100644
+--- a/rded/helper/discovery/base_discovery.cpp
++++ b/rded/helper/discovery/base_discovery.cpp
+@@ -7,6 +7,9 @@
+ #include <cstring>
+ #include <iostream>
+ #include <map>
++#include <memory>
++#include <optional>
++#include <unordered_map>
+ #include <vector>
+ 
+ // TODO(@harshtya): Write test case for the functions once docker image is
+@@ -14,12 +17,24 @@
+ 
+ const int BASE_REQUEST_RETRIES = 50;
+ 
++constexpr int CHECKSUM_BYTES = 4;
++
++std::unordered_map<std::string_view,
++                   std::unique_ptr<struct requester_base_context>>
++    udevIdToBaseDiscContextMap;
++
+ std::map<uint8_t, int> baseCommandRequestSize = {
+     {PLDM_GET_TID, 0},
+     {PLDM_GET_PLDM_TYPES, 0},
+     {PLDM_GET_PLDM_VERSION, PLDM_GET_VERSION_REQ_BYTES},
+     {PLDM_GET_PLDM_COMMANDS, PLDM_GET_COMMANDS_REQ_BYTES}};
+ 
++void cleanupBaseDiscAtExit()
++{
++    udevIdToBaseDiscContextMap.clear();
++    baseCommandRequestSize.clear();
++}
++
+ int processGetTidRequest(int fd, uint8_t eid, int instanceId,
+                          struct requester_base_context* ctx,
+                          std::vector<uint8_t> requestMsg)
+@@ -91,7 +106,7 @@ int processGetPldmVersionRequest(int fd, uint8_t eid, int instanceId,
+         return PLDM_BASE_REQUESTER_SEND_FAIL;
+     }
+     std::vector<uint8_t> response(
+-        sizeof(pldm_msg_hdr) + PLDM_GET_VERSION_RESP_BYTES, 0);
++        sizeof(pldm_msg_hdr) + PLDM_GET_VERSION_RESP_BYTES + CHECKSUM_BYTES, 0);
+     uint8_t* responseMsg = response.data();
+     size_t responseMsgSize = sizeof(pldm_msg_hdr) + PLDM_GET_VERSION_RESP_BYTES;
+     auto responsePtr = reinterpret_cast<struct pldm_msg*>(responseMsg);
+@@ -200,12 +215,35 @@ int printContext(struct requester_base_context* ctx)
+     return 0;
+ }
+ 
++void removeBaseContext(std::string_view rdeDevice)
++{
++    auto it = udevIdToBaseDiscContextMap.find(rdeDevice);
++    if (it != udevIdToBaseDiscContextMap.end())
++    {
++        udevIdToBaseDiscContextMap.erase(rdeDevice);
++    }
++}
++
++std::optional<struct requester_base_context*>
++    getBaseContext(std::string_view rdeDevice)
++{
++    auto it = udevIdToBaseDiscContextMap.find(rdeDevice);
++    if (it != udevIdToBaseDiscContextMap.end())
++    {
++        return it->second.get();
++    }
++    std::cerr << "Base context not found for device: " << rdeDevice
++              << std::endl;
++    return std::nullopt;
++}
++
+ int performBaseDiscovery(std::string rdeDevice, int fd, int netId, int eid,
+                          int instanceId)
+ {
+     int rc = 0;
+-    struct requester_base_context* ctx = new requester_base_context();
+-    rc = pldm_base_init_context(ctx, rdeDevice.c_str(), netId);
++    std::unique_ptr<struct requester_base_context> ctx =
++        std::make_unique<struct requester_base_context>();
++    rc = pldm_base_init_context(ctx.get(), rdeDevice.data(), netId);
+     if (-1 == rc)
+     {
+         std::cerr
+@@ -214,7 +252,7 @@ int performBaseDiscovery(std::string rdeDevice, int fd, int netId, int eid,
+         return rc;
+     }
+     std::cerr << "Triggering PLDM Base discovery...\n";
+-    rc = pldm_base_start_discovery(ctx);
++    rc = pldm_base_start_discovery(ctx.get());
+     if (-1 == rc)
+     {
+         std::cerr << "Error in triggering PLDM_BASE, Return Code: " << rc
+@@ -243,13 +281,13 @@ int performBaseDiscovery(std::string rdeDevice, int fd, int netId, int eid,
+         std::vector<uint8_t> requestMsg(sizeof(pldm_msg_hdr) + requestBytes);
+         auto request = reinterpret_cast<pldm_msg*>(requestMsg.data());
+         std::cerr << "Getting next request...\n";
+-        rc = pldm_base_get_next_request(ctx, instanceId, request);
++        rc = pldm_base_get_next_request(ctx.get(), instanceId, request);
+         if (rc)
+         {
+             std::cerr << "No more requests to process\n";
+             break;
+         }
+-        rc = processNextRequest(fd, eid, instanceId, ctx, requestMsg);
++        rc = processNextRequest(fd, eid, instanceId, ctx.get(), requestMsg);
+         if (rc)
+         {
+             std::cerr << "Failure in processing request with error code:"
+@@ -265,9 +303,25 @@ int performBaseDiscovery(std::string rdeDevice, int fd, int netId, int eid,
+         processCounter++;
+     }
+ 
++    if (rc == 0)
++    {
++        // on success save the context after removing if exists
++        removeBaseContext(rdeDevice);
++        udevIdToBaseDiscContextMap.emplace(rdeDevice, std::move(ctx));
++    }
+     if (DEBUG)
+     {
+-        printContext(ctx);
++        std::optional<struct requester_base_context*> baseContext =
++            getBaseContext(rdeDevice);
++        if (baseContext.has_value())
++        {
++            printContext(baseContext.value());
++        }
++        else
++        {
++            std::cerr << "No base context found to print for rde device "
++                      << rdeDevice << std::endl;
++        }
+     }
+     std::cerr << "PLDM Base Discovery and context completed for " << rdeDevice
+               << "\n";
+diff --git a/rded/helper/discovery/base_discovery.hpp b/rded/helper/discovery/base_discovery.hpp
+index 256d7373b..a7094b9ea 100644
+--- a/rded/helper/discovery/base_discovery.hpp
++++ b/rded/helper/discovery/base_discovery.hpp
+@@ -1,12 +1,23 @@
+ #include "libpldm/pldm_base_requester.h"
++
+ #include <iostream>
+ #include <map>
++#include <optional>
+ #include <vector>
+ 
+ #pragma once
+ 
+-
+ extern std::map<uint8_t, int> baseCommandRequestSize;
+ 
+ int performBaseDiscovery(std::string rdeDevice, int fd, int netId, int eid,
+-                           int instanceId);
++                         int instanceId);
++
++// Removes existing base context
++void removeBaseContext(std::string_view rdeDevice);
++
++// Gets base context for a device
++std::optional<struct requester_base_context*>
++    getBaseContext(std::string_view rdeDevice);
++
++// cleanup at exit
++void cleanupBaseDiscAtExit();
+\ No newline at end of file
+diff --git a/rded/helper/discovery/rde_discovery.cpp b/rded/helper/discovery/rde_discovery.cpp
+index 60aafdb66..e89d79846 100644
+--- a/rded/helper/discovery/rde_discovery.cpp
++++ b/rded/helper/discovery/rde_discovery.cpp
+@@ -19,7 +19,9 @@
+ #include <vector>
+ 
+ std::unordered_map<std::string, int> managerCtxCounter;
+-std::unordered_map<std::string, struct pldm_rde_requester_manager*> managers;
++std::unordered_map<std::string,
++                   std::unique_ptr<struct pldm_rde_requester_manager>>
++    managers;
+ std::vector<struct pldm_rde_requester_context> rdeContexts;
+ // This map will store dictionaries for each of the RDE Devices separately
+ std::unordered_map<std::string,
+@@ -36,35 +38,47 @@ std::unordered_map<uint8_t, int> rdeCommandRequestSize = {
+     {PLDM_GET_SCHEMA_DICTIONARY, 5},
+     {PLDM_RDE_MULTIPART_RECEIVE, 7}};
+ 
++void cleanupRdeDiscAtExit()
++{
++    managerCtxCounter.clear();
++    managers.clear();
++    rdeContexts.clear();
++    dictionaryDeviceMap.clear();
++    dictionaryMetaDeviceMap.clear();
++    rdeCommandRequestSize.clear();
++}
++
+ int printRDENegotiateContext(struct pldm_rde_requester_manager* mgr)
+ {
+     std::cerr << "====================================================\n";
+     std::cerr << "***RDE Negotiate/Medium Parameters Begins***\n";
+     std::cerr << "====================================================\n";
+ 
+-    struct pldm_rde_device_info* deviceInfo = mgr->device;
+-
+     std::cerr << "MC Concurrency: " << std::to_string(mgr->mc_concurrency)
+               << "\n";
+     std::cerr << "MC Transfer Size: " << std::to_string(mgr->mc_transfer_size)
+               << "\n";
+ 
+     std::cerr << "miniBMC Concurrency: "
+-              << std::to_string(deviceInfo->device_concurrency) << "\n";
++              << std::to_string(mgr->device.device_concurrency) << "\n";
+     std::cerr << "miniBMC Device Capabilities Flag: "
+-              << std::to_string(deviceInfo->device_capabilities_flag.byte)
++              << std::to_string(mgr->device.device_capabilities_flag.byte)
+               << "\n";
+     std::cerr << "miniBMC Device Feature Support: "
+-              << std::to_string(deviceInfo->device_feature_support.value)
++              << std::to_string(mgr->device.device_feature_support.value)
+               << "\n";
+     std::cerr << "miniBMC Device Configuration Signature: "
+-              << std::to_string(deviceInfo->device_configuration_signature)
++              << std::to_string(mgr->device.device_configuration_signature)
+               << "\n";
+     std::cerr << "miniBMC Device Provider Name (Eid): "
+               << std::to_string(
+-                     deviceInfo->device_provider_name.string_length_bytes)
++                     mgr->device.device_provider_name.string_length_bytes)
+               << "\n";
+ 
++    std::cerr << "Device max buffer size: "
++              << std::to_string(mgr->device.device_maximum_transfer_chunk_size)
++              << std::endl;
++
+     std::cerr << "Negotiated Transfer Size (Medium Parameters): "
+               << std::to_string(mgr->negotiated_transfer_size) << "\n";
+ 
+@@ -74,6 +88,16 @@ int printRDENegotiateContext(struct pldm_rde_requester_manager* mgr)
+     return 0;
+ }
+ 
++// Removes manager for rde device
++void removeManagerForRdeDevice(const std::string& rdeDevice)
++{
++    auto it = managers.find(rdeDevice);
++    if (it != managers.end())
++    {
++        managers.erase(rdeDevice);
++    }
++}
++
+ // Callback function to allocate memory to contexts and keep them in an array
+ struct pldm_rde_requester_context*
+     allocateMemoryToContexts(uint8_t numberOfContexts)
+@@ -81,14 +105,12 @@ struct pldm_rde_requester_context*
+     int end = rdeContextCounter + numberOfContexts;
+     for (; rdeContextCounter < end; rdeContextCounter++)
+     {
+-        struct pldm_rde_requester_context* currentCtx =
+-            (struct pldm_rde_requester_context*)malloc(
+-                sizeof(struct pldm_rde_requester_context));
+-        if (pldm_rde_create_context(currentCtx))
++        struct pldm_rde_requester_context currentCtx;
++        if (pldm_rde_create_context(&currentCtx))
+         {
+             return nullptr;
+         }
+-        rdeContexts.emplace_back(*currentCtx);
++        rdeContexts.emplace_back(currentCtx);
+     }
+     return &rdeContexts[rdeContextCounter - 1];
+ }
+@@ -114,8 +136,7 @@ int initManager(const std::string& rdeDeviceId, int netId)
+     // TODO(@harshtya): Cleanup memory when device is removed.
+     uint8_t mcConcurrency = 3;
+     uint32_t mcTransferSize = PLDM_MAX_REQUEST_BYTES;
+-    bitfield16_t* mcFeatures =
+-        reinterpret_cast<bitfield16_t*>(malloc(sizeof(bitfield16_t)));
++    std::unique_ptr<bitfield16_t> mcFeatures = std::make_unique<bitfield16_t>();
+     mcFeatures->value = 102; // Fixed for now
+     std::cout << "Initializing RDE Manager...\n";
+     std::vector<uint32_t> resourceIds = {
+@@ -123,14 +144,14 @@ int initManager(const std::string& rdeDeviceId, int netId)
+         0x00060000, 0x00070000, 0x00080000, 0x00090000, 0x000a0000, 0x000b0000,
+         0x000c0000, 0x000d0000, 0x000e0000, 0x000f0000, 0x00100000, 0xffffffff};
+ 
+-    struct pldm_rde_requester_manager* manager =
+-        new pldm_rde_requester_manager();
++    std::unique_ptr<struct pldm_rde_requester_manager> manager =
++        std::make_unique<struct pldm_rde_requester_manager>();
+ 
+     managerCtxCounter.insert({rdeDeviceId, rdeContextCounter});
+-    int rc = pldm_rde_init_context(rdeDeviceId.c_str(), netId, manager,
+-                                   mcConcurrency, mcTransferSize, mcFeatures,
+-                                   resourceIds.size(), &resourceIds.front(),
+-                                   allocateMemoryToContexts, freeMemory);
++    int rc = pldm_rde_init_context(
++        rdeDeviceId.c_str(), netId, manager.get(), mcConcurrency,
++        mcTransferSize, mcFeatures.get(), resourceIds.size(),
++        &resourceIds.front(), allocateMemoryToContexts, freeMemory);
+ 
+     if (rc)
+     {
+@@ -140,6 +161,8 @@ int initManager(const std::string& rdeDeviceId, int netId)
+         return rc;
+     }
+ 
++    // remove if exists and then emplace
++    removeManagerForRdeDevice(rdeDeviceId);
+     managers.emplace(rdeDeviceId, std::move(manager));
+     return PLDM_RDE_REQUESTER_SUCCESS;
+ }
+@@ -154,16 +177,15 @@ int getRdeContextForRdeDevice(const std::string& rdeDevice)
+     return -1;
+ }
+ 
+-int getManagerForRdeDevice(const std::string& rdeDevice,
+-                           struct pldm_rde_requester_manager** manager)
++std::optional<struct pldm_rde_requester_manager*>
++    getManagerForRdeDevice(const std::string& rdeDevice)
+ {
+     auto it = managers.find(rdeDevice);
+     if (it != managers.end())
+     {
+-        *manager = it->second;
+-        return 0;
++        return it->second.get();
+     }
+-    return -1;
++    return std::nullopt;
+ }
+ 
+ int processNegotiateRedfishParametersRequest(
+@@ -182,11 +204,10 @@ int processNegotiateRedfishParametersRequest(
+         ctx->context_status = CONTEXT_FREE;
+         return PLDM_RDE_REQUESTER_SEND_FAIL;
+     }
+-    std::vector<uint8_t> response(
+-        sizeof(pldm_msg_hdr) + RDE_NEGOTIATE_REDFISH_PARAMS_RESP_SIZE, 0);
++    std::vector<uint8_t> response(sizeof(pldm_msg_hdr) + PLDM_MAX_REQUEST_BYTES,
++                                  0);
+     uint8_t* responseMsg = response.data();
+-    size_t responseMsgSize = sizeof(pldm_msg_hdr) +
+-                             RDE_NEGOTIATE_REDFISH_PARAMS_RESP_SIZE;
++    size_t responseMsgSize = response.size();
+     auto responsePtr = reinterpret_cast<struct pldm_msg*>(responseMsg);
+     rc = pldm_recv_at_network(eid, fd, instanceId, &responseMsg,
+                               &responseMsgSize, manager->net_id);
+@@ -543,14 +564,16 @@ int performRdeDiscovery(const std::string& rdeDeviceId, int fd, int netId,
+         return -1;
+     }
+ 
+-    struct pldm_rde_requester_manager* manager;
+-    rc = getManagerForRdeDevice(rdeDeviceId, &manager);
+-    if (rc)
++    std::optional<struct pldm_rde_requester_manager*> managerOpt =
++        getManagerForRdeDevice(rdeDeviceId);
++
++    if (!managerOpt.has_value())
+     {
+         std::cerr << "Failure to get RDE Manager for rde device with ec: " << rc
+                   << "\n";
+         return -1;
+     }
++    struct pldm_rde_requester_manager* manager = managerOpt.value();
+ 
+     int retryCounter = 0;
+     while (true)
+@@ -580,7 +603,7 @@ int performRdeDiscovery(const std::string& rdeDeviceId, int fd, int netId,
+         if (rc)
+         {
+             std::cerr << "Not a valid request to process\n";
+-            return -1;
++            return rc;
+         }
+ 
+         rc = processNextRdeRequest(fd, destEid, 1, manager, &baseContext,
+@@ -590,12 +613,14 @@ int performRdeDiscovery(const std::string& rdeDeviceId, int fd, int netId,
+         {
+             std::cerr << "Unable to process next rde request: "
+                       << std::to_string(rc) << "\n";
+-            return -1;
++            return rc;
+         }
+         retryCounter++;
+         if (retryCounter > 5)
+         {
+-            break;
++            std::cerr << "All process counters exhausted for RDE discovery"
++                      << std::endl;
++            rc = -1;
+         }
+     }
+ 
+@@ -603,7 +628,7 @@ int performRdeDiscovery(const std::string& rdeDeviceId, int fd, int netId,
+     {
+         printRDENegotiateContext(manager);
+     }
+-    return 0;
++    return rc;
+ }
+ 
+ int performDictionaryDiscoveryForDevice(const std::string& rdeDeviceId, int fd,
+@@ -641,14 +666,16 @@ int performDictionaryDiscoveryForDevice(const std::string& rdeDeviceId, int fd,
+                   << "\n";
+     }
+ 
+-    struct pldm_rde_requester_manager* manager;
+-    rc = getManagerForRdeDevice(rdeDeviceId, &manager);
+-    if (rc)
++    std::optional<struct pldm_rde_requester_manager*> managerOpt =
++        getManagerForRdeDevice(rdeDeviceId);
++
++    if (!managerOpt.has_value())
+     {
+         std::cerr << "Failure to get RDE Manager for rde device with ec: " << rc
+                   << "\n";
+         return -1;
+     }
++    struct pldm_rde_requester_manager* manager = managerOpt.value();
+ 
+     std::cout << "Getting Dictionaries..." << std::endl;
+     int retryCounter = 0;
+diff --git a/rded/helper/discovery/rde_discovery.hpp b/rded/helper/discovery/rde_discovery.hpp
+index be3d13c00..1e5efa708 100644
+--- a/rded/helper/discovery/rde_discovery.hpp
++++ b/rded/helper/discovery/rde_discovery.hpp
+@@ -3,6 +3,8 @@
+ #include <iostream>
+ #include <string>
+ #include <vector>
++#include <optional>
++
+ #pragma once
+ 
+ #define RDE_NEGOTIATE_REDFISH_PARAMS_RESP_SIZE 12
+@@ -24,6 +26,11 @@ int getRdeFreeContextForRdeDevice(
+ int getDictionaryForRidDev(const std::string& rdeDeviceId, uint32_t resourceId,
+                            uint8_t** dictElem, uint32_t* dictLength);
+ 
+-int getManagerForRdeDevice(const std::string& rdeDevice,
+-                           struct pldm_rde_requester_manager** manager);
++// Get manager for a device
++std::optional<struct pldm_rde_requester_manager*>
++    getManagerForRdeDevice(const std::string& rdeDevice);
++
+ void cleanupDictionaries(const std::string& rdeDeviceId);
++
++// cleanup disc data at exit
++void cleanupRdeDiscAtExit();
+\ No newline at end of file
+diff --git a/rded/helper/mctpsetup.hpp b/rded/helper/mctpsetup.hpp
+index 56f51fae5..05ff9eaf2 100644
+--- a/rded/helper/mctpsetup.hpp
++++ b/rded/helper/mctpsetup.hpp
+@@ -13,6 +13,11 @@
+ 
+ std::mutex m_mutex;
+ std::unordered_map<std::string, std::string> portToUdevIdMap;
++
++void cleanupMctpAtExit()
++{
++    portToUdevIdMap.clear();
++}
+ /**
+  * @brief Execute a CLI command and return the command line result
+  */
+diff --git a/rded/helper/rde_operation/rde_operation.cpp b/rded/helper/rde_operation/rde_operation.cpp
+index 03155e2fa..6240d1bbe 100644
+--- a/rded/helper/rde_operation/rde_operation.cpp
++++ b/rded/helper/rde_operation/rde_operation.cpp
+@@ -34,7 +34,11 @@ std::map<uint8_t, int> rdeOpCommandRequestSize = {
+ 
+ int cleanupRequestId(uint8_t requestId, struct pldm_rde_requester_context* ctx)
+ {
+-    responseRequestMap.erase(requestId);
++    auto it = responseRequestMap.find(requestId);
++    if (it != responseRequestMap.end())
++    {
++        responseRequestMap.erase(requestId);
++    }
+     free_rde_op_init_context(ctx);
+     return 0;
+ }
+@@ -270,7 +274,7 @@ int createOperationLocator(std::vector<uint8_t>* operationLocator,
+     std::vector<uint8_t> temp;
+     uint16_t rootOffset = bejDictGetPropertyHeadOffset();
+     uint16_t currentOffset;
+-    const struct BejDictionaryProperty* property = new BejDictionaryProperty();
++    const struct BejDictionaryProperty* property = nullptr;
+     rc = bejDictGetPropertyByName(*schemaDict, rootOffset, "Drive", &property,
+                                   &currentOffset);
+     if (rc)
+@@ -460,12 +464,6 @@ int processRdeOperationInit(int fd, uint8_t eid, int instanceId,
+                   << rc << std::endl;
+         return rc;
+     }
+-
+-    struct rde_operation* operation = (struct rde_operation*)ctx->operation_ctx;
+-    struct pldm_rde_varstring* resp_etag = operation->resp_etag;
+-
+-    char* chars = new char[resp_etag->string_length_bytes + 1];
+-    memcpy(chars, resp_etag->string_data, resp_etag->string_length_bytes);
+     return PLDM_RDE_REQUESTER_SUCCESS;
+ }
+ 
+@@ -833,9 +831,9 @@ int executeRdeOperation(int fd, int eid, int instanceId, std::string uri,
+         {
+             if (DEBUG)
+             {
+-                std::cout << "No next operation found\n";
++                std::cerr << "No next operation found\n";
+             }
+-            break;
++            return rc;
+         }
+ 
+         rc = processNextRdeOperation(fd, eid, instanceId, manager, ctx,
+@@ -845,7 +843,7 @@ int executeRdeOperation(int fd, int eid, int instanceId, std::string uri,
+         {
+             if (DEBUG)
+             {
+-                std::cout << "Not a valid request\n";
++                std::cerr << "Not a valid request\n";
+             }
+             return rc;
+         }
+diff --git a/rded/helper/rde_operation/rde_update_utils.cpp b/rded/helper/rde_operation/rde_update_utils.cpp
+index 69b0627cd..8c2ce5795 100644
+--- a/rded/helper/rde_operation/rde_update_utils.cpp
++++ b/rded/helper/rde_operation/rde_update_utils.cpp
+@@ -26,6 +26,7 @@
+ #include <sstream>
+ #include <unordered_map>
+ #include <variant>
++#include <helper/common.hpp>
+ 
+ using json = nlohmann::json;
+ using BejChildNodesVariant =
+@@ -58,7 +59,11 @@ static int addLeafToBejTree(
+             try
+             {
+                 int64_t data = propertyValue.get<int64_t>();
+-                std::cerr << "Converted integer value: " << data << std::endl;
++                if (DEBUG)
++                {
++                    std::cerr << "Converted integer value: " << data
++                              << std::endl;
++                }
+                 struct RedfishPropertyLeafInt child;
+                 childNodesStorage[propertyName] = child;
+                 bejTreeAddInteger(root,
+@@ -126,8 +131,12 @@ static int addLeafToBejTree(
+             try
+             {
+                 double data = propertyValue.get<double>();
+-                std::cerr << "Converted real/double value: " << data
+-                          << std::endl;
++                if (DEBUG)
++                {
++                    std::cerr << "Converted real/double value: " << data
++                              << std::endl;
++                }
++
+                 struct RedfishPropertyLeafReal child;
+                 childNodesStorage[propertyName] = child;
+                 bejTreeAddReal(root,
+@@ -226,8 +235,11 @@ static int addBranchToBejTree(
+         for (const auto& it : propertyValue.items())
+         {
+             const std::string& childMemberPropertyName = it.key();
+-            std::cerr << "Property name: " << childMemberPropertyName
+-                      << std::endl;
++            if (DEBUG)
++            {
++                std::cerr << "Property name: " << childMemberPropertyName
++                          << std::endl;
++            }
+ 
+             json& childMemberPropertyValue = it.value();
+ 
+@@ -316,7 +328,10 @@ int encodePayloadForUpdateOp(const std::string& redfishReqPayload,
+     for (const auto& it : redfishReqJsonPayload.items())
+     {
+         const std::string& memberPropertyName = it.key();
+-        std::cerr << "Property name: " << memberPropertyName << std::endl;
++        if (DEBUG)
++        {
++            std::cerr << "Property name: " << memberPropertyName << std::endl;
++        }
+         json& memberPropertyValue = it.value();
+ 
+         // Create a BEJ tree for encoding
+diff --git a/rded/helper/resource_id_mapper.hpp b/rded/helper/resource_id_mapper.hpp
+index 9be658838..cf9c0151d 100644
+--- a/rded/helper/resource_id_mapper.hpp
++++ b/rded/helper/resource_id_mapper.hpp
+@@ -5,283 +5,191 @@
+  *
+  */
+ #include <iostream>
+-#include <unordered_map>
+ #include <string>
+ #include <string_view>
++#include <unordered_map>
+ 
+-std::unordered_map<std::string_view, uint32_t> resourceIdMap;
+-int createResourceIdMapping()
+-{
+-    resourceIdMap.emplace("/redfish/v1/Chassis", 0x00000000);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/Tray", 0x00010000);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_0", 0x00010001);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_1", 0x00010002);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_2", 0x00010003);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_3", 0x00010004);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_4", 0x00010005);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_5", 0x00010006);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_6", 0x00010007);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_7", 0x00010008);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_8", 0x00010009);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_9", 0x0001000a);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_10", 0x0001000b);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_11", 0x0001000c);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_12", 0x0001000d);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_13", 0x0001000e);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_14", 0x0001000f);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_15", 0x00010010);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_16", 0x00010011);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_17", 0x00010012);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_18", 0x00010013);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_19", 0x00010014);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_20", 0x00010015);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_21", 0x00010016);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_22", 0x00010017);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_23", 0x00010018);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/Tray/Sensors", 0x00020000);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_0/Sensors", 0x00020001);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_1/Sensors", 0x00020002);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_2/Sensors", 0x00020003);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_3/Sensors", 0x00020004);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_4/Sensors", 0x00020005);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_5/Sensors", 0x00020006);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_6/Sensors", 0x00020007);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_7/Sensors", 0x00020008);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_8/Sensors", 0x00020009);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_9/Sensors", 0x0002000a);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_10/Sensors", 0x0002000b);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_11/Sensors", 0x0002000c);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_12/Sensors", 0x0002000d);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_13/Sensors", 0x0002000e);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_14/Sensors", 0x0002000f);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_15/Sensors", 0x00020010);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_16/Sensors", 0x00020011);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_17/Sensors", 0x00020012);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_18/Sensors", 0x00020013);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_19/Sensors", 0x00020014);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_20/Sensors", 0x00020015);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_21/Sensors", 0x00020016);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_22/Sensors", 0x00020017);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_23/Sensors", 0x00020018);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/vol_p12v_scaled", 0x00030000);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/vol_p5v1_scaled", 0x00030001);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/vol_p5v2_scaled", 0x00030002);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/vol_p3v3_aux_scaled", 0x00030003);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/vol_p1v8_scaled", 0x00030004);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/vol_p0v86_scaled", 0x00030005);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/vol_p1v45_scaled", 0x00030006);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/temp_i2tang", 0x00030007);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/hsc_temp", 0x00030008);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/Tray/Sensors/hsc_vin", 0x00030009);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/hsc_vout", 0x0003000a);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/Tray/Sensors/hsc_pin", 0x0003000b);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/hsc_iout", 0x0003000c);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/hsc_peak_iout", 0x0003000d);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/hsc_peak_vin", 0x0003000e);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/hsc_peak_temp", 0x0003000f);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/hsc_peak_pin", 0x00030010);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/brick_p12v_temp", 0x00030011);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/brick_p12v_vin", 0x00030012);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/brick_p12v_vout", 0x00030013);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/brick_p12v_iout", 0x00030014);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/brick_p12v_pout", 0x00030015);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/p5v_1_vin", 0x00030016);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/p5v_1_vout", 0x00030017);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/p5v_1_iout", 0x00030018);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/p5v_1_temp", 0x00030019);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/p5v_2_vin", 0x0003001a);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/p5v_2_vout", 0x0003001b);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/p5v_2_iout", 0x0003001c);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/p5v_2_temp", 0x0003001d);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/p0v86_vin", 0x0003001e);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/p0v86_vout", 0x0003001f);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/p0v86_iout", 0x00030020);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/p0v86_temp", 0x00030021);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/fan0_tach", 0x00030022);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/fan1_tach", 0x00030023);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/fan0_duty", 0x00030024);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/fan1_duty", 0x00030025);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/ioc_temp", 0x00030026);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_0/Sensors/Drive_0t", 0x00030027);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_1/Sensors/Drive_0t", 0x00030028);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_2/Sensors/Drive_0t", 0x00030029);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_3/Sensors/Drive_0t", 0x0003002a);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_4/Sensors/Drive_0t", 0x0003002b);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_5/Sensors/Drive_0t", 0x0003002c);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_6/Sensors/Drive_0t", 0x0003002d);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_7/Sensors/Drive_0t", 0x0003002e);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_8/Sensors/Drive_0t", 0x0003002f);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_9/Sensors/Drive_0t", 0x00030030);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_10/Sensors/Drive_0t", 0x00030031);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_11/Sensors/Drive_0t", 0x00030032);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_12/Sensors/Drive_0t", 0x00030033);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_13/Sensors/Drive_0t", 0x00030034);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_14/Sensors/Drive_0t", 0x00030035);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_15/Sensors/Drive_0t", 0x00030036);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_16/Sensors/Drive_0t", 0x00030037);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_17/Sensors/Drive_0t", 0x00030038);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_18/Sensors/Drive_0t", 0x00030039);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_19/Sensors/Drive_0t", 0x0003003a);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_20/Sensors/Drive_0t", 0x0003003b);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_21/Sensors/Drive_0t", 0x0003003c);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_22/Sensors/Drive_0t", 0x0003003d);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_23/Sensors/Drive_0t", 0x0003003e);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/host_fan0_pwm", 0x0003003f);
+-    resourceIdMap.emplace("/redfish/v1/Managers", 0x00040000);
+-    resourceIdMap.emplace("/redfish/v1/Managers/mbmc", 0x00050000);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_0/Drives", 0x00060001);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_1/Drives", 0x00060002);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_2/Drives", 0x00060003);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_3/Drives", 0x00060004);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_4/Drives", 0x00060005);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_5/Drives", 0x00060006);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_6/Drives", 0x00060007);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_7/Drives", 0x00060008);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_8/Drives", 0x00060009);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_9/Drives", 0x0006000a);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_10/Drives", 0x0006000b);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_11/Drives", 0x0006000c);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_12/Drives", 0x0006000d);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_13/Drives", 0x0006000e);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_14/Drives", 0x0006000f);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_15/Drives", 0x00060010);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_16/Drives", 0x00060011);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_17/Drives", 0x00060012);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_18/Drives", 0x00060013);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_19/Drives", 0x00060014);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_20/Drives", 0x00060015);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_21/Drives", 0x00060016);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_22/Drives", 0x00060017);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_23/Drives", 0x00060018);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_0/Drives/SATA_0", 0x00070000);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_1/Drives/SATA_1", 0x00070001);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_2/Drives/SATA_2", 0x00070002);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_3/Drives/SATA_3", 0x00070003);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_4/Drives/SATA_4", 0x00070004);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_5/Drives/SATA_5", 0x00070005);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_6/Drives/SATA_6", 0x00070006);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_7/Drives/SATA_7", 0x00070007);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_8/Drives/SATA_8", 0x00070008);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_9/Drives/SATA_9", 0x00070009);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_10/Drives/SATA_10", 0x0007000a);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_11/Drives/SATA_11", 0x0007000b);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_12/Drives/SATA_12", 0x0007000c);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_13/Drives/SATA_13", 0x0007000d);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_14/Drives/SATA_14", 0x0007000e);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_15/Drives/SATA_15", 0x0007000f);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_16/Drives/SATA_16", 0x00070010);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_17/Drives/SATA_17", 0x00070011);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_18/Drives/SATA_18", 0x00070012);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_19/Drives/SATA_19", 0x00070013);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_20/Drives/SATA_20", 0x00070014);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_21/Drives/SATA_21", 0x00070015);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_22/Drives/SATA_22", 0x00070016);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/SATA_23/Drives/SATA_23", 0x00070017);
+-    resourceIdMap.emplace("/redfish/v1/UpdateService", 0x00080000);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/UpdateService/FirmwareInventory", 0x000a0000);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/UpdateService/FirmwareInventory/mbmc", 0x00090000);
+-    resourceIdMap.emplace("/redfish/v1/Chassis/Tray/Controls", 0x000c0000);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Controls/HDD_pid", 0x000b0000);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/p12v_cem_imon", 0x00030040);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/p12v_cem", 0x00030041);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/mb_pwr_status", 0x00030042);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/fan0_imon", 0x00030043);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Sensors/fan1_imon", 0x00030044);
+-    resourceIdMap.emplace(
+-        "/redfish/v1/Chassis/Tray/Controls/fans", 0x000b0001);
+-    resourceIdMap.emplace("/redfish/v1/Storage", 0x000d0000);
+-    resourceIdMap.emplace("/redfish/v1/Storage/SATA", 0x000e0000);
+-    resourceIdMap.emplace("/redfish/v1/Storage/SATA/Controllers", 0x000f0000);
+-    resourceIdMap.emplace("/redfish/v1/Storage/SATA/Controllers/ioc",
+-                          0x00100000);
+-    // Whenever making a new entry make sure to check the resourceIds vector in
+-    // rde_discovery.cpp to see if the parent dictionary is present or not
+-    return 0;
+-}
++std::unordered_map<std::string_view, uint32_t> resourceIdMap = {
++    {"/redfish/v1/Chassis", 0x00000000},
++    {"/redfish/v1/Chassis/Tray", 0x00010000},
++    {"/redfish/v1/Chassis/SATA_0", 0x00010001},
++    {"/redfish/v1/Chassis/SATA_1", 0x00010002},
++    {"/redfish/v1/Chassis/SATA_2", 0x00010003},
++    {"/redfish/v1/Chassis/SATA_3", 0x00010004},
++    {"/redfish/v1/Chassis/SATA_4", 0x00010005},
++    {"/redfish/v1/Chassis/SATA_5", 0x00010006},
++    {"/redfish/v1/Chassis/SATA_6", 0x00010007},
++    {"/redfish/v1/Chassis/SATA_7", 0x00010008},
++    {"/redfish/v1/Chassis/SATA_8", 0x00010009},
++    {"/redfish/v1/Chassis/SATA_9", 0x0001000a},
++    {"/redfish/v1/Chassis/SATA_10", 0x0001000b},
++    {"/redfish/v1/Chassis/SATA_11", 0x0001000c},
++    {"/redfish/v1/Chassis/SATA_12", 0x0001000d},
++    {"/redfish/v1/Chassis/SATA_13", 0x0001000e},
++    {"/redfish/v1/Chassis/SATA_14", 0x0001000f},
++    {"/redfish/v1/Chassis/SATA_15", 0x00010010},
++    {"/redfish/v1/Chassis/SATA_16", 0x00010011},
++    {"/redfish/v1/Chassis/SATA_17", 0x00010012},
++    {"/redfish/v1/Chassis/SATA_18", 0x00010013},
++    {"/redfish/v1/Chassis/SATA_19", 0x00010014},
++    {"/redfish/v1/Chassis/SATA_20", 0x00010015},
++    {"/redfish/v1/Chassis/SATA_21", 0x00010016},
++    {"/redfish/v1/Chassis/SATA_22", 0x00010017},
++    {"/redfish/v1/Chassis/SATA_23", 0x00010018},
++    {"/redfish/v1/Chassis/Tray/Sensors", 0x00020000},
++    {"/redfish/v1/Chassis/SATA_0/Sensors", 0x00020001},
++    {"/redfish/v1/Chassis/SATA_1/Sensors", 0x00020002},
++    {"/redfish/v1/Chassis/SATA_2/Sensors", 0x00020003},
++    {"/redfish/v1/Chassis/SATA_3/Sensors", 0x00020004},
++    {"/redfish/v1/Chassis/SATA_4/Sensors", 0x00020005},
++    {"/redfish/v1/Chassis/SATA_5/Sensors", 0x00020006},
++    {"/redfish/v1/Chassis/SATA_6/Sensors", 0x00020007},
++    {"/redfish/v1/Chassis/SATA_7/Sensors", 0x00020008},
++    {"/redfish/v1/Chassis/SATA_8/Sensors", 0x00020009},
++    {"/redfish/v1/Chassis/SATA_9/Sensors", 0x0002000a},
++    {"/redfish/v1/Chassis/SATA_10/Sensors", 0x0002000b},
++    {"/redfish/v1/Chassis/SATA_11/Sensors", 0x0002000c},
++    {"/redfish/v1/Chassis/SATA_12/Sensors", 0x0002000d},
++    {"/redfish/v1/Chassis/SATA_13/Sensors", 0x0002000e},
++    {"/redfish/v1/Chassis/SATA_14/Sensors", 0x0002000f},
++    {"/redfish/v1/Chassis/SATA_15/Sensors", 0x00020010},
++    {"/redfish/v1/Chassis/SATA_16/Sensors", 0x00020011},
++    {"/redfish/v1/Chassis/SATA_17/Sensors", 0x00020012},
++    {"/redfish/v1/Chassis/SATA_18/Sensors", 0x00020013},
++    {"/redfish/v1/Chassis/SATA_19/Sensors", 0x00020014},
++    {"/redfish/v1/Chassis/SATA_20/Sensors", 0x00020015},
++    {"/redfish/v1/Chassis/SATA_21/Sensors", 0x00020016},
++    {"/redfish/v1/Chassis/SATA_22/Sensors", 0x00020017},
++    {"/redfish/v1/Chassis/SATA_23/Sensors", 0x00020018},
++    {"/redfish/v1/Chassis/Tray/Sensors/vol_p12v_scaled", 0x00030000},
++    {"/redfish/v1/Chassis/Tray/Sensors/vol_p5v1_scaled", 0x00030001},
++    {"/redfish/v1/Chassis/Tray/Sensors/vol_p5v2_scaled", 0x00030002},
++    {"/redfish/v1/Chassis/Tray/Sensors/vol_p3v3_aux_scaled", 0x00030003},
++    {"/redfish/v1/Chassis/Tray/Sensors/vol_p1v8_scaled", 0x00030004},
++    {"/redfish/v1/Chassis/Tray/Sensors/vol_p0v86_scaled", 0x00030005},
++    {"/redfish/v1/Chassis/Tray/Sensors/vol_p1v45_scaled", 0x00030006},
++    {"/redfish/v1/Chassis/Tray/Sensors/temp_i2tang", 0x00030007},
++    {"/redfish/v1/Chassis/Tray/Sensors/hsc_temp", 0x00030008},
++    {"/redfish/v1/Chassis/Tray/Sensors/hsc_vin", 0x00030009},
++    {"/redfish/v1/Chassis/Tray/Sensors/hsc_vout", 0x0003000a},
++    {"/redfish/v1/Chassis/Tray/Sensors/hsc_pin", 0x0003000b},
++    {"/redfish/v1/Chassis/Tray/Sensors/hsc_iout", 0x0003000c},
++    {"/redfish/v1/Chassis/Tray/Sensors/hsc_peak_iout", 0x0003000d},
++    {"/redfish/v1/Chassis/Tray/Sensors/hsc_peak_vin", 0x0003000e},
++    {"/redfish/v1/Chassis/Tray/Sensors/hsc_peak_temp", 0x0003000f},
++    {"/redfish/v1/Chassis/Tray/Sensors/hsc_peak_pin", 0x00030010},
++    {"/redfish/v1/Chassis/Tray/Sensors/brick_p12v_temp", 0x00030011},
++    {"/redfish/v1/Chassis/Tray/Sensors/brick_p12v_vin", 0x00030012},
++    {"/redfish/v1/Chassis/Tray/Sensors/brick_p12v_vout", 0x00030013},
++    {"/redfish/v1/Chassis/Tray/Sensors/brick_p12v_iout", 0x00030014},
++    {"/redfish/v1/Chassis/Tray/Sensors/brick_p12v_pout", 0x00030015},
++    {"/redfish/v1/Chassis/Tray/Sensors/p5v_1_vin", 0x00030016},
++    {"/redfish/v1/Chassis/Tray/Sensors/p5v_1_vout", 0x00030017},
++    {"/redfish/v1/Chassis/Tray/Sensors/p5v_1_iout", 0x00030018},
++    {"/redfish/v1/Chassis/Tray/Sensors/p5v_1_temp", 0x00030019},
++    {"/redfish/v1/Chassis/Tray/Sensors/p5v_2_vin", 0x0003001a},
++    {"/redfish/v1/Chassis/Tray/Sensors/p5v_2_vout", 0x0003001b},
++    {"/redfish/v1/Chassis/Tray/Sensors/p5v_2_iout", 0x0003001c},
++    {"/redfish/v1/Chassis/Tray/Sensors/p5v_2_temp", 0x0003001d},
++    {"/redfish/v1/Chassis/Tray/Sensors/p0v86_vin", 0x0003001e},
++    {"/redfish/v1/Chassis/Tray/Sensors/p0v86_vout", 0x0003001f},
++    {"/redfish/v1/Chassis/Tray/Sensors/p0v86_iout", 0x00030020},
++    {"/redfish/v1/Chassis/Tray/Sensors/p0v86_temp", 0x00030021},
++    {"/redfish/v1/Chassis/Tray/Sensors/fan0_tach", 0x00030022},
++    {"/redfish/v1/Chassis/Tray/Sensors/fan1_tach", 0x00030023},
++    {"/redfish/v1/Chassis/Tray/Sensors/fan0_duty", 0x00030024},
++    {"/redfish/v1/Chassis/Tray/Sensors/fan1_duty", 0x00030025},
++    {"/redfish/v1/Chassis/Tray/Sensors/ioc_temp", 0x00030026},
++    {"/redfish/v1/Chassis/SATA_0/Sensors/Drive_0t", 0x00030027},
++    {"/redfish/v1/Chassis/SATA_1/Sensors/Drive_0t", 0x00030028},
++    {"/redfish/v1/Chassis/SATA_2/Sensors/Drive_0t", 0x00030029},
++    {"/redfish/v1/Chassis/SATA_3/Sensors/Drive_0t", 0x0003002a},
++    {"/redfish/v1/Chassis/SATA_4/Sensors/Drive_0t", 0x0003002b},
++    {"/redfish/v1/Chassis/SATA_5/Sensors/Drive_0t", 0x0003002c},
++    {"/redfish/v1/Chassis/SATA_6/Sensors/Drive_0t", 0x0003002d},
++    {"/redfish/v1/Chassis/SATA_7/Sensors/Drive_0t", 0x0003002e},
++    {"/redfish/v1/Chassis/SATA_8/Sensors/Drive_0t", 0x0003002f},
++    {"/redfish/v1/Chassis/SATA_9/Sensors/Drive_0t", 0x00030030},
++    {"/redfish/v1/Chassis/SATA_10/Sensors/Drive_0t", 0x00030031},
++    {"/redfish/v1/Chassis/SATA_11/Sensors/Drive_0t", 0x00030032},
++    {"/redfish/v1/Chassis/SATA_12/Sensors/Drive_0t", 0x00030033},
++    {"/redfish/v1/Chassis/SATA_13/Sensors/Drive_0t", 0x00030034},
++    {"/redfish/v1/Chassis/SATA_14/Sensors/Drive_0t", 0x00030035},
++    {"/redfish/v1/Chassis/SATA_15/Sensors/Drive_0t", 0x00030036},
++    {"/redfish/v1/Chassis/SATA_16/Sensors/Drive_0t", 0x00030037},
++    {"/redfish/v1/Chassis/SATA_17/Sensors/Drive_0t", 0x00030038},
++    {"/redfish/v1/Chassis/SATA_18/Sensors/Drive_0t", 0x00030039},
++    {"/redfish/v1/Chassis/SATA_19/Sensors/Drive_0t", 0x0003003a},
++    {"/redfish/v1/Chassis/SATA_20/Sensors/Drive_0t", 0x0003003b},
++    {"/redfish/v1/Chassis/SATA_21/Sensors/Drive_0t", 0x0003003c},
++    {"/redfish/v1/Chassis/SATA_22/Sensors/Drive_0t", 0x0003003d},
++    {"/redfish/v1/Chassis/SATA_23/Sensors/Drive_0t", 0x0003003e},
++    {"/redfish/v1/Chassis/Tray/Sensors/host_fan0_pwm", 0x0003003f},
++    {"/redfish/v1/Managers", 0x00040000},
++    {"/redfish/v1/Managers/mbmc", 0x00050000},
++    {"/redfish/v1/Chassis/SATA_0/Drives", 0x00060001},
++    {"/redfish/v1/Chassis/SATA_1/Drives", 0x00060002},
++    {"/redfish/v1/Chassis/SATA_2/Drives", 0x00060003},
++    {"/redfish/v1/Chassis/SATA_3/Drives", 0x00060004},
++    {"/redfish/v1/Chassis/SATA_4/Drives", 0x00060005},
++    {"/redfish/v1/Chassis/SATA_5/Drives", 0x00060006},
++    {"/redfish/v1/Chassis/SATA_6/Drives", 0x00060007},
++    {"/redfish/v1/Chassis/SATA_7/Drives", 0x00060008},
++    {"/redfish/v1/Chassis/SATA_8/Drives", 0x00060009},
++    {"/redfish/v1/Chassis/SATA_9/Drives", 0x0006000a},
++    {"/redfish/v1/Chassis/SATA_10/Drives", 0x0006000b},
++    {"/redfish/v1/Chassis/SATA_11/Drives", 0x0006000c},
++    {"/redfish/v1/Chassis/SATA_12/Drives", 0x0006000d},
++    {"/redfish/v1/Chassis/SATA_13/Drives", 0x0006000e},
++    {"/redfish/v1/Chassis/SATA_14/Drives", 0x0006000f},
++    {"/redfish/v1/Chassis/SATA_15/Drives", 0x00060010},
++    {"/redfish/v1/Chassis/SATA_16/Drives", 0x00060011},
++    {"/redfish/v1/Chassis/SATA_17/Drives", 0x00060012},
++    {"/redfish/v1/Chassis/SATA_18/Drives", 0x00060013},
++    {"/redfish/v1/Chassis/SATA_19/Drives", 0x00060014},
++    {"/redfish/v1/Chassis/SATA_20/Drives", 0x00060015},
++    {"/redfish/v1/Chassis/SATA_21/Drives", 0x00060016},
++    {"/redfish/v1/Chassis/SATA_22/Drives", 0x00060017},
++    {"/redfish/v1/Chassis/SATA_23/Drives", 0x00060018},
++    {"/redfish/v1/Chassis/SATA_0/Drives/SATA_0", 0x00070000},
++    {"/redfish/v1/Chassis/SATA_1/Drives/SATA_1", 0x00070001},
++    {"/redfish/v1/Chassis/SATA_2/Drives/SATA_2", 0x00070002},
++    {"/redfish/v1/Chassis/SATA_3/Drives/SATA_3", 0x00070003},
++    {"/redfish/v1/Chassis/SATA_4/Drives/SATA_4", 0x00070004},
++    {"/redfish/v1/Chassis/SATA_5/Drives/SATA_5", 0x00070005},
++    {"/redfish/v1/Chassis/SATA_6/Drives/SATA_6", 0x00070006},
++    {"/redfish/v1/Chassis/SATA_7/Drives/SATA_7", 0x00070007},
++    {"/redfish/v1/Chassis/SATA_8/Drives/SATA_8", 0x00070008},
++    {"/redfish/v1/Chassis/SATA_9/Drives/SATA_9", 0x00070009},
++    {"/redfish/v1/Chassis/SATA_10/Drives/SATA_10", 0x0007000a},
++    {"/redfish/v1/Chassis/SATA_11/Drives/SATA_11", 0x0007000b},
++    {"/redfish/v1/Chassis/SATA_12/Drives/SATA_12", 0x0007000c},
++    {"/redfish/v1/Chassis/SATA_13/Drives/SATA_13", 0x0007000d},
++    {"/redfish/v1/Chassis/SATA_14/Drives/SATA_14", 0x0007000e},
++    {"/redfish/v1/Chassis/SATA_15/Drives/SATA_15", 0x0007000f},
++    {"/redfish/v1/Chassis/SATA_16/Drives/SATA_16", 0x00070010},
++    {"/redfish/v1/Chassis/SATA_17/Drives/SATA_17", 0x00070011},
++    {"/redfish/v1/Chassis/SATA_18/Drives/SATA_18", 0x00070012},
++    {"/redfish/v1/Chassis/SATA_19/Drives/SATA_19", 0x00070013},
++    {"/redfish/v1/Chassis/SATA_20/Drives/SATA_20", 0x00070014},
++    {"/redfish/v1/Chassis/SATA_21/Drives/SATA_21", 0x00070015},
++    {"/redfish/v1/Chassis/SATA_22/Drives/SATA_22", 0x00070016},
++    {"/redfish/v1/Chassis/SATA_23/Drives/SATA_23", 0x00070017},
++    {"/redfish/v1/UpdateService", 0x00080000},
++    {"/redfish/v1/UpdateService/FirmwareInventory", 0x000a0000},
++    {"/redfish/v1/UpdateService/FirmwareInventory/mbmc", 0x00090000},
++    {"/redfish/v1/Chassis/Tray/Controls", 0x000c0000},
++    {"/redfish/v1/Chassis/Tray/Controls/HDD_pid", 0x000b0000},
++    {"/redfish/v1/Chassis/Tray/Sensors/p12v_cem_imon", 0x00030040},
++    {"/redfish/v1/Chassis/Tray/Sensors/p12v_cem", 0x00030041},
++    {"/redfish/v1/Chassis/Tray/Sensors/mb_pwr_status", 0x00030042},
++    {"/redfish/v1/Chassis/Tray/Sensors/fan0_imon", 0x00030043},
++    {"/redfish/v1/Chassis/Tray/Sensors/fan1_imon", 0x00030044},
++    {"/redfish/v1/Chassis/Tray/Controls/fans", 0x000b0001},
++    {"/redfish/v1/Storage", 0x000d0000},
++    {"/redfish/v1/Storage/SATA", 0x000e0000},
++    {"/redfish/v1/Storage/SATA/Controllers", 0x000f0000},
++    {"/redfish/v1/Storage/SATA/Controllers/ioc", 0x00100000}};
+ 
+ int getResourceIdForUri(std::string_view uri, uint32_t& resourceId)
+ {
+diff --git a/rded/rded.cpp b/rded/rded.cpp
+index 8f9c2c593..ecd83d023 100644
+--- a/rded/rded.cpp
++++ b/rded/rded.cpp
+@@ -10,7 +10,7 @@
+ #include "libbej/bej_encoder_core.h"
+ 
+ #include "libbej/bej_encoder_json.hpp"
+-
++#include <csignal>
+ #include <locale.h>
+ #include <signal.h>
+ #include <string.h>
+@@ -49,7 +49,7 @@ constexpr int SOCKET_TIMEOUT_SECONDS = 8;
+ 
+ constexpr uint32_t annotationDictRid = 0xffffffff;
+ 
+-int fd; // MCTP Socket for RDE communication
++int fd = -1; // MCTP Socket for RDE communication
+ 
+ boost::asio::io_context io;
+ std::unordered_map<int, int> retryCounterMap;
+@@ -60,6 +60,26 @@ std::unordered_map<std::string,
+     dbusIntfMap;
+ std::unordered_map<std::string, std::string> objectPathDeviceId;
+ 
++void cleanupAtExit()
++{
++    // cleans up at daemon termination
++    fd = 0;
++    resourceIdMap.clear();
++    deviceNetIdMap.clear();
++    dbusIntfMap.clear();
++    objectPathDeviceId.clear();
++    retryCounterMap.clear();
++    cleanupBaseDiscAtExit();
++    cleanupRdeDiscAtExit();
++    cleanupMctpAtExit();
++}
++
++void signalHandler(int signal) {
++    std::cerr << "Received signal " << signal << ". Cleaning up...\n";
++    cleanupAtExit();
++    std::exit(signal);
++}
++
+ int initiateDiscovery(int fd, std::string udevId, int netId, uint8_t destEid,
+                       uint8_t instanceId)
+ {
+@@ -264,17 +284,20 @@ std::string
+     }
+ 
+     // get manager
+-    struct pldm_rde_requester_manager* manager;
+-    rc = getManagerForRdeDevice(udevid, &manager);
+-    if (rc)
++    std::optional<struct pldm_rde_requester_manager*> managerOpt =
++        getManagerForRdeDevice(udevid);
++
++    if (!managerOpt.has_value())
+     {
+         std::cerr
+             << "Failed to get manager to perform read request for request id: "
+             << std::to_string(requestId) << ", request uri: " << uri
+             << ", UDEVID: " << udevid << "\n";
++        retryCounterMap.erase(requestId);
+         return "Unsuccessful RDE operation with error code: " +
+                std::to_string(rc);
+     }
++    struct pldm_rde_requester_manager* manager = managerOpt.value();
+     uint32_t resourceId = 0;
+ 
+     std::string rawUri = uri;
+@@ -282,6 +305,7 @@ std::string
+     rc = removeQueryParams(uri, "?");
+     if (DEBUG && !rc)
+     {
++        retryCounterMap.erase(requestId);
+         std::cerr << "URI after removing query params: " << uri << "\n";
+     }
+     truncateTrailingFwSlash(uri);
+@@ -301,9 +325,9 @@ std::string
+                            std::to_string(rc) + " with URI: " + rawUri + "\n";
+             }
+ 
++            retryCounterMap.erase(requestId);
+             return "Unsuccessful RDE operation with error code: " +
+                    std::to_string(rc) + " with URI: " + rawUri + "\n";
+-            ;
+         }
+ 
+         std::string resource_uri;
+@@ -318,6 +342,7 @@ std::string
+                 std::cerr
+                     << "Unable to resolve collection for RDE Action request "
+                     << "with rawUri: " << rawUri << "\n";
++                retryCounterMap.erase(requestId);
+                 return "Unable to resolve collection for RDE Action request"
+                        " with rc: " +
+                        std::to_string(rc) + "\n";
+@@ -329,6 +354,7 @@ std::string
+         {
+             // Create a resource request
+             std::cerr << "Operation create not supported: " << rawUri << "\n";
++            retryCounterMap.erase(requestId);
+             return "Create RDE operation not yet supported for " + rawUri +
+                    "\n";
+         }
+@@ -349,17 +375,19 @@ std::string
+                       << " with retry counter: " << (retry + 1) << std::endl;
+             retryCounterMap.erase(requestId);
+             cleanupRequestId(requestId, &baseContext);
++
++            if (retry == (MAX_RETRIES_MCTP_SOCK_FAILURE - 1))
++            {
++                std::cerr << "All retries exhausted for rde execute: " << uri
++                          << std::endl;
++                return "Unsuccessful RDE operation with error code: " +
++                       std::to_string(rc);
++            }
+         }
+         else
+         {
+             break;
+         }
+-
+-        if (retry == 4)
+-        {
+-            return "Unsuccessful RDE operation with error code: " +
+-                   std::to_string(rc);
+-        }
+     }
+ 
+     uint8_t* payload;
+@@ -382,8 +410,6 @@ std::string
+     {
+         std::cerr << "Unable to translate BEJ for URI: " << rawUri << "\n";
+         jsonResp = "Unsuccessful RDE operation- failed to translate bej";
+-        cleanupRequestId(requestId, &baseContext);
+-        retryCounterMap.erase(requestId);
+     }
+     cleanupRequestId(requestId, &baseContext);
+     retryCounterMap.erase(requestId);
+@@ -415,17 +441,17 @@ void pldmSetup(int& fd, sdbusplus::asio::object_server& objectServer,
+                       << "with retry counter:" << (retryCounter + 1)
+                       << std::endl;
+             cleanupDictionaries(udevid);
++            if (retryCounter == (MAX_RETRIES_MCTP_SOCK_FAILURE - 1))
++            {
++                std::cerr << "All retries exhausted for discovery for "
++                          << " udev: " << udevid << std::endl;
++                return;
++            }
+         }
+         else
+         {
+             break;
+         }
+-        if (retryCounter == 4)
+-        {
+-            std::cerr << "All retries exhausted for discovery for "
+-                      << " udev: " << udevid << std::endl;
+-            return;
+-        }
+         std::cerr << "Retrying discovery again due to failure" << std::endl;
+     }
+ 
+@@ -632,7 +658,6 @@ int triggerRdeReactor(int fd)
+             // TODO (@harshtya): clean up the manager for this object path
+             // TODO (@harshtya): clean up the dictionaries
+         }
+-        return;
+     });
+ 
+     systemBus->request_name("xyz.openbmc_project.rdeoperation");
+@@ -650,7 +675,11 @@ void setSocketTimeout(int fd, int seconds, int milliseconds)
+ 
+ int main()
+ {
+-    int rc;
++    int rc = 0;
++    std::atexit(cleanupAtExit);
++    std::signal(SIGTERM, signalHandler);
++    std::signal(SIGINT, signalHandler);
++
+     std::cerr << "Successfully started the RDE Daemon \n";
+     fd = socket(AF_MCTP, SOCK_DGRAM, 0);
+     if (-1 == fd)
+@@ -675,13 +704,6 @@ int main()
+         return -1;
+     }
+ 
+-    rc = createResourceIdMapping();
+-    if (rc)
+-    {
+-        std::cerr << "Resource map creation failed" << std::endl;
+-        return rc;
+-    }
+-
+     rc = triggerRdeReactor(fd);
+     if (rc)
+     {
+-- 
+2.34.1
+

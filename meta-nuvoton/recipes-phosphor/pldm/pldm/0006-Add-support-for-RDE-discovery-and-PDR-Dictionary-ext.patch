@@ -1,0 +1,1177 @@
+From 2277c6729ccb97b45740aabdc39ca6eb935d80e6 Mon Sep 17 00:00:00 2001
+From: Harsh Tyagi <harshtya@google.com>
+Date: Thu, 17 Aug 2023 16:42:08 +0000
+Subject: [PATCH] Add support for RDE discovery and PDR Dictionary extraction
+
+Tested on dev-board and meta-gms machine for multiple RDEDevice
+Patch Tracking Bug: b/290068491
+pstream-Status: Pending
+Upstream Info / review: Not yet created
+Justification: (Design under review)
+https://gerrit.openbmc.org/c/openbmc/docs/+/61256
+---
+ rded/helper/common.hpp                   |   2 +-
+ rded/helper/discovery/base_discovery.cpp |   1 -
+ rded/helper/discovery/rde_discovery.cpp  | 702 +++++++++++++++++++++++
+ rded/helper/discovery/rde_discovery.hpp  |  18 +
+ rded/helper/mctpsetup.hpp                |  57 +-
+ rded/meson.build                         |   3 +-
+ rded/rded.cpp                            | 181 +++---
+ 7 files changed, 874 insertions(+), 90 deletions(-)
+ create mode 100644 rded/helper/discovery/rde_discovery.cpp
+ create mode 100644 rded/helper/discovery/rde_discovery.hpp
+
+diff --git a/rded/helper/common.hpp b/rded/helper/common.hpp
+index 33a11aa..28508a9 100644
+--- a/rded/helper/common.hpp
++++ b/rded/helper/common.hpp
+@@ -2,7 +2,7 @@
+ 
+ #define PLDM_MAX_REQUEST_BYTES 2048
+ #define MAX_RETRIES_FOR_REQUEST 500
+-
++constexpr bool DEBUG = false;
+ enum ContextState
+ {
+     RDE_CONTEXT_FREE = 0,
+diff --git a/rded/helper/discovery/base_discovery.cpp b/rded/helper/discovery/base_discovery.cpp
+index cbeb8fe..a982320 100644
+--- a/rded/helper/discovery/base_discovery.cpp
++++ b/rded/helper/discovery/base_discovery.cpp
+@@ -12,7 +12,6 @@
+ // TODO(@harshtya): Write test case for the functions once docker image is
+ // created with the latest code dependenncies
+ 
+-const bool DEBUG = false;
+ const int BASE_REQUEST_RETRIES = 50;
+ 
+ std::map<uint8_t, int> baseCommandRequestSize = {
+diff --git a/rded/helper/discovery/rde_discovery.cpp b/rded/helper/discovery/rde_discovery.cpp
+new file mode 100644
+index 0000000..96f6398
+--- /dev/null
++++ b/rded/helper/discovery/rde_discovery.cpp
+@@ -0,0 +1,702 @@
++#include "helper/discovery/rde_discovery.hpp"
++
++#include "libpldm/base.h"
++#include "libpldm/pldm.h"
++#include "libpldm/pldm_rde.h"
++#include "libpldm/requester/pldm_rde_requester.h"
++#include "libpldm/utils.h"
++
++#include "helper/common.hpp"
++
++#include <cstdint>
++#include <iostream>
++#include <map>
++#include <memory>
++#include <optional>
++#include <string>
++#include <tuple>
++#include <unordered_map>
++#include <vector>
++
++std::unordered_map<std::string, int> managerCtxCounter;
++std::unordered_map<std::string, struct pldm_rde_requester_manager*> managers;
++std::vector<struct pldm_rde_requester_context> rdeContexts;
++// This map will store dictionaries for each of the RDE Devices separately
++std::unordered_map<std::string,
++                   std::unordered_map<uint32_t, std::vector<uint8_t>>>
++    dictionaryDeviceMap;
++std::unordered_map<std::string,
++                   std::unordered_map<uint32_t, std::tuple<uint8_t, uint8_t>>>
++    dictionaryMetaDeviceMap;
++
++int rdeContextCounter = 0;
++uint8_t numberOfResources = 12;
++std::unordered_map<uint8_t, int> rdeCommandRequestSize = {
++    {PLDM_NEGOTIATE_REDFISH_PARAMETERS, 3},
++    {PLDM_NEGOTIATE_MEDIUM_PARAMETERS, 4},
++    {PLDM_GET_SCHEMA_DICTIONARY, 5},
++    {PLDM_RDE_MULTIPART_RECEIVE, 7}};
++
++int printRDENegotiateContext(struct pldm_rde_requester_manager* mgr)
++{
++    std::cerr << "====================================================\n";
++    std::cerr << "***RDE Negotiate/Medium Parameters Begins***\n";
++    std::cerr << "====================================================\n";
++
++    struct pldm_rde_device_info* deviceInfo = mgr->device;
++
++    std::cerr << "MC Concurrency: " << std::to_string(mgr->mc_concurrency)
++              << "\n";
++    std::cerr << "MC Transfer Size: " << std::to_string(mgr->mc_transfer_size)
++              << "\n";
++
++    std::cerr << "miniBMC Concurrency: "
++              << std::to_string(deviceInfo->device_concurrency) << "\n";
++    std::cerr << "miniBMC Device Capabilities Flag: "
++              << std::to_string(deviceInfo->device_capabilities_flag.byte)
++              << "\n";
++    std::cerr << "miniBMC Device Feature Support: "
++              << std::to_string(deviceInfo->device_feature_support.value)
++              << "\n";
++    std::cerr << "miniBMC Device Configuration Signature: "
++              << std::to_string(deviceInfo->device_configuration_signature)
++              << "\n";
++    std::cerr << "miniBMC Device Provider Name (Eid): "
++              << std::to_string(
++                     deviceInfo->device_provider_name.string_length_bytes)
++              << "\n";
++
++    std::cerr << "Negotiated Transfer Size (Medium Parameters): "
++              << std::to_string(mgr->negotiated_transfer_size) << "\n";
++
++    std::cerr << "====================================================\n";
++    std::cerr << "***RDE Negotiate/Medium Parameters Ends***\n";
++    std::cerr << "====================================================\n";
++    return 0;
++}
++
++// Callback function to allocate memory to contexts and keep them in an array
++struct pldm_rde_requester_context*
++    allocateMemoryToContexts(uint8_t numberOfContexts)
++{
++    int end = rdeContextCounter + numberOfContexts;
++    for (rdeContextCounter = 0; rdeContextCounter < end; rdeContextCounter++)
++    {
++        struct pldm_rde_requester_context* currentCtx =
++            (struct pldm_rde_requester_context*)malloc(
++                sizeof(struct pldm_rde_requester_context));
++        if (pldm_rde_create_context(currentCtx))
++        {
++            return nullptr;
++        }
++        rdeContexts.emplace_back(*currentCtx);
++    }
++
++    return &rdeContexts[0];
++}
++
++void freeMemory(void* context)
++{
++    free(context);
++}
++
++void cleanupDictionaries(const std::string& rdeDeviceId)
++{
++    std::cerr << "Dict size before cleanup" << dictionaryDeviceMap.size()
++              << std::endl;
++    dictionaryDeviceMap.erase(rdeDeviceId);
++    dictionaryMetaDeviceMap.erase(rdeDeviceId);
++
++    std::cerr << "Dict size after cleanup" << dictionaryDeviceMap.size()
++              << std::endl;
++}
++
++int initManager(const std::string& rdeDeviceId, int netId)
++{
++    // TODO(@harshtya): Cleanup memory when device is removed.
++    uint8_t mcConcurrency = 3;
++    uint32_t mcTransferSize = PLDM_MAX_REQUEST_BYTES;
++    bitfield16_t* mcFeatures =
++        reinterpret_cast<bitfield16_t*>(malloc(sizeof(bitfield16_t)));
++    mcFeatures->value = 102; // Fixed for now
++    std::cout << "Initializing RDE Manager...\n";
++    std::vector<uint32_t> resourceIds = {
++        0x00000000, 0x00010000, 0x00020000, 0x00030000, 0x00040000, 0x00050000,
++        0x00060000, 0x00070000, 0x00080000, 0x00090000, 0x000a0000, 0xffffffff};
++
++    struct pldm_rde_requester_manager* manager =
++        new pldm_rde_requester_manager();
++
++    managerCtxCounter.insert({rdeDeviceId, rdeContextCounter});
++    int rc = pldm_rde_init_context(rdeDeviceId.c_str(), netId, manager,
++                                   mcConcurrency, mcTransferSize, mcFeatures,
++                                   numberOfResources, &resourceIds.front(),
++                                   allocateMemoryToContexts, freeMemory);
++
++    if (rc)
++    {
++        std::cerr
++            << "RDE Discovery failed due to context initialization error: "
++            << rc << "\n";
++        return rc;
++    }
++
++    managers.emplace(rdeDeviceId, std::move(manager));
++    return PLDM_RDE_REQUESTER_SUCCESS;
++}
++
++int getRdeContextForRdeDevice(const std::string& rdeDevice)
++{
++    auto it = managerCtxCounter.find(rdeDevice);
++    if (it != managerCtxCounter.end())
++    {
++        return it->second;
++    }
++    return -1;
++}
++
++int getManagerForRdeDevice(const std::string& rdeDevice,
++                           struct pldm_rde_requester_manager** manager)
++{
++    auto it = managers.find(rdeDevice);
++    if (it != managers.end())
++    {
++        *manager = it->second;
++        return 0;
++    }
++    return -1;
++}
++
++int processNegotiateRedfishParametersRequest(
++    int fd, uint8_t eid, int instanceId,
++    struct pldm_rde_requester_manager* manager,
++    struct pldm_rde_requester_context* ctx,
++    const std::vector<uint8_t>& requestMsg)
++{
++    ctx->context_status = CONTEXT_BUSY;
++    ctx->requester_status = PLDM_RDE_REQUESTER_WAITING_FOR_RESPONSE;
++    int rc = pldm_send_at_network(eid, manager->net_id, fd, requestMsg.data(),
++                                  requestMsg.size());
++    if (rc)
++    {
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        ctx->context_status = CONTEXT_FREE;
++        return PLDM_RDE_REQUESTER_SEND_FAIL;
++    }
++    std::vector<uint8_t> response(
++        sizeof(pldm_msg_hdr) + RDE_NEGOTIATE_REDFISH_PARAMS_RESP_SIZE, 0);
++    uint8_t* responseMsg = response.data();
++    size_t responseMsgSize = sizeof(pldm_msg_hdr) +
++                             RDE_NEGOTIATE_REDFISH_PARAMS_RESP_SIZE;
++    auto responsePtr = reinterpret_cast<struct pldm_msg*>(responseMsg);
++    rc = pldm_recv_at_network(eid, fd, instanceId, &responseMsg,
++                              &responseMsgSize, manager->net_id);
++    if (rc)
++    {
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        return PLDM_RDE_REQUESTER_RECV_FAIL;
++    }
++
++    std::cerr << "Pushing Response for Negotiate Redfish Parameters...\n";
++
++    rc = pldm_rde_discovery_push_response(manager, ctx, responsePtr,
++                                          responseMsgSize);
++
++    if (rc)
++    {
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        ctx->context_status = CONTEXT_FREE;
++        std::cerr << "Saving RDE Disc. Response Failed..." << std::endl;
++        return PLDM_RDE_REQUESTER_NOT_RESP_MSG;
++    }
++    return PLDM_BASE_REQUESTER_SUCCESS;
++}
++
++int processNegotiateMediumParametersRequest(
++    int fd, uint8_t eid, int instanceId,
++    struct pldm_rde_requester_manager* manager,
++    struct pldm_rde_requester_context* ctx,
++    const std::vector<uint8_t>& requestMsg)
++{
++    ctx->context_status = CONTEXT_BUSY;
++    ctx->requester_status = PLDM_RDE_REQUESTER_WAITING_FOR_RESPONSE;
++    int rc = pldm_send_at_network(eid, manager->net_id, fd, requestMsg.data(),
++                                  requestMsg.size());
++    if (rc)
++    {
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        ctx->context_status = CONTEXT_FREE;
++        return PLDM_RDE_REQUESTER_SEND_FAIL;
++    }
++
++    std::vector<uint8_t> response(
++        sizeof(pldm_msg_hdr) + RDE_NEGOTIATE_REDFISH_MEDIUM_PARAMS_RESP_SIZE,
++        0);
++    uint8_t* responseMsg = response.data();
++    size_t responseMsgSize = sizeof(pldm_msg_hdr) +
++                             RDE_NEGOTIATE_REDFISH_MEDIUM_PARAMS_RESP_SIZE;
++    auto responsePtr = reinterpret_cast<struct pldm_msg*>(responseMsg);
++
++    rc = pldm_recv_at_network(eid, fd, instanceId, &responseMsg,
++                              &responseMsgSize, manager->net_id);
++    if (rc)
++    {
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        ctx->context_status = CONTEXT_FREE;
++        return PLDM_RDE_REQUESTER_RECV_FAIL;
++    }
++
++    std::cerr << "Pushing Response for Negotiate Medium Parameters...\n";
++
++    rc = pldm_rde_discovery_push_response(manager, ctx, responsePtr,
++                                          responseMsgSize);
++    if (rc)
++    {
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        ctx->context_status = CONTEXT_FREE;
++        std::cerr << "Saving RDE Disc. (Med) Response Failed..." << std::endl;
++        return PLDM_RDE_REQUESTER_NOT_RESP_MSG;
++    }
++    return PLDM_RDE_REQUESTER_SUCCESS;
++}
++
++std::optional<std::unordered_map<uint32_t, std::vector<uint8_t>>*>
++    getDictionaryMap(const std::string& rdeDevice)
++{
++    if (DEBUG)
++    {
++        std::cerr << "Searching dict for: " << rdeDevice
++                  << "with length: " << std::to_string(rdeDevice.length())
++                  << "\n";
++    }
++    auto it = dictionaryDeviceMap.find(rdeDevice);
++    if (it != dictionaryDeviceMap.end())
++    {
++        return &(it->second);
++    }
++    return std::nullopt;
++}
++
++int verifyChecksumForMultipartRecv(const std::vector<uint8_t>& payload)
++{
++    uint32_t payloadLength = payload.size();
++    auto calculatedChecksum = crc32(&(payload.front()), payloadLength - 4);
++    uint8_t byte0 = payload.at(payloadLength - 4);
++    uint8_t byte1 = payload.at(payloadLength - 3);
++    uint8_t byte2 = payload.at(payloadLength - 2);
++    uint8_t byte3 = payload.at(payloadLength - 1);
++
++    uint32_t checksumReceived = byte0 | byte1 << 8 | byte2 << 16 | byte3 << 24;
++    if (calculatedChecksum == checksumReceived)
++    {
++        if (DEBUG)
++        {
++            std::cerr << "For RDE Op: Checksum Verified, Calculated Checksum: "
++                      << std::to_string(calculatedChecksum)
++                      << " , Received Checksum: "
++                      << std::to_string(checksumReceived) << std::endl;
++        }
++        return PLDM_RDE_REQUESTER_SUCCESS;
++    }
++    else
++    {
++        std::cerr
++            << "Checksum mismatch for request id/resource id in multipart receive"
++            << std::endl;
++        return PLDM_RDE_REQUESTER_RECV_FAIL;
++    }
++    return PLDM_RDE_REQUESTER_RECV_FAIL;
++}
++
++void getDictMultipartResponseHandler(struct pldm_rde_requester_manager* manager,
++                                     struct pldm_rde_requester_context* ctx,
++                                     uint8_t** payload, uint32_t payloadLength,
++                                     bool hasChecksum)
++{
++    uint8_t resourceIdIndex = ctx->current_pdr_resource->resource_id_index;
++    uint32_t resourceId = manager->resource_ids[resourceIdIndex];
++
++    if (DEBUG)
++    {
++        std::cerr << "Resource id pushing in dictionary...\t"
++                  << std::to_string(resourceIdIndex)
++                  << " and Resource id: " << std::to_string(resourceId) << "\n";
++    }
++    std::string device_id = std::string(manager->device_name);
++    std::unordered_map<uint32_t, std::vector<uint8_t>>* dictionaryRidMap;
++
++    std::optional<std::unordered_map<uint32_t, std::vector<uint8_t>>*>
++        dictionaryRidMapOpt = getDictionaryMap(device_id);
++
++    if (dictionaryRidMapOpt.has_value())
++    {
++        dictionaryRidMap = dictionaryRidMapOpt.value();
++        std::cout << dictionaryRidMap->size();
++    }
++    else
++    {
++        std::cerr << "Unable to fetch dictionary from map while storing\n";
++        return;
++    }
++
++    auto it = dictionaryRidMap->find(resourceId);
++    std::vector<uint8_t>* dictionary;
++    if (it != dictionaryRidMap->end())
++    {
++        dictionary = &(it->second);
++        dictionary->insert(it->second.end(), *payload,
++                           (*payload) + payloadLength);
++    }
++    else
++    {
++        (*dictionaryRidMap)[resourceId] =
++            std::vector<uint8_t>(*payload, *payload + payloadLength);
++        dictionary = &(*dictionaryRidMap)[resourceId];
++    }
++    if (DEBUG)
++    {
++        std::cerr << "Payload Length inside creating map for resource id << "
++                  << std::to_string(
++                         ctx->current_pdr_resource->resource_id_index)
++                  << ": " << payloadLength << "\n";
++    }
++
++    if (hasChecksum)
++    {
++        int rc = verifyChecksumForMultipartRecv(*dictionary);
++        if (rc)
++        {
++            std::cerr << "Checksum verification for dictionary failed\n";
++        }
++        else
++        {
++            if (DEBUG)
++            {
++                std::cerr << "Checksum verified delteing last 4 payload\n";
++            }
++            dictionary->erase(dictionary->begin() + (dictionary->size() - 4),
++                              dictionary->end());
++        }
++    }
++}
++
++void responseHandlerCallback(struct pldm_rde_requester_manager* manager,
++                             struct pldm_rde_requester_context* ctx,
++                             uint8_t** payload, uint32_t payloadLength,
++                             bool hasChecksum)
++{
++    switch (ctx->next_command)
++    {
++        case PLDM_RDE_MULTIPART_RECEIVE:
++            getDictMultipartResponseHandler(manager, ctx, payload,
++                                            payloadLength, hasChecksum);
++            break;
++        default:
++            break; // No Op for other commands- Can add functionalities later
++    }
++}
++
++int processGetNextDictionarySchema(int fd, uint8_t eid, int instanceId,
++                                   struct pldm_rde_requester_manager* manager,
++                                   struct pldm_rde_requester_context* ctx,
++                                   const std::vector<uint8_t>& requestMsg)
++{
++    ctx->context_status = CONTEXT_BUSY;
++    ctx->requester_status = PLDM_RDE_REQUESTER_WAITING_FOR_RESPONSE;
++    int rc = pldm_send_at_network(eid, manager->net_id, fd, requestMsg.data(),
++                                  requestMsg.size());
++    if (rc)
++    {
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        ctx->context_status = CONTEXT_FREE;
++        return PLDM_RDE_REQUESTER_SEND_FAIL;
++    }
++    std::vector<uint8_t> response(
++        sizeof(pldm_msg_hdr) + RDE_GET_DICT_SCHEMA_RESP_SIZE, 0);
++    uint8_t* responseMsg = response.data();
++    size_t responseMsgSize = sizeof(pldm_msg_hdr) +
++                             RDE_GET_DICT_SCHEMA_RESP_SIZE;
++    auto responsePtr = reinterpret_cast<struct pldm_msg*>(responseMsg);
++
++    rc = pldm_recv_at_network(eid, fd, instanceId, &responseMsg,
++                              &responseMsgSize, manager->net_id);
++    if (rc)
++    {
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        ctx->context_status = CONTEXT_FREE;
++        return PLDM_RDE_REQUESTER_RECV_FAIL;
++    }
++
++    rc = pldm_rde_push_get_dictionary_response(
++        manager, ctx, responsePtr, responseMsgSize, responseHandlerCallback);
++
++    if (rc)
++    {
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        ctx->context_status = CONTEXT_FREE;
++        std::cerr << "Saving Dictionary Response Failed..." << std::endl;
++        return PLDM_RDE_REQUESTER_NOT_RESP_MSG;
++    }
++
++    return PLDM_RDE_REQUESTER_SUCCESS;
++}
++
++int processRdeMultipartReceive(int fd, uint8_t eid, int instanceId,
++                               struct pldm_rde_requester_manager* manager,
++                               struct pldm_rde_requester_context* ctx,
++                               const std::vector<uint8_t>& requestMsg)
++{
++    ctx->context_status = CONTEXT_BUSY;
++    ctx->requester_status = PLDM_RDE_REQUESTER_WAITING_FOR_RESPONSE;
++    int rc = pldm_send_at_network(eid, manager->net_id, fd, requestMsg.data(),
++                                  requestMsg.size());
++    if (rc)
++    {
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        ctx->context_status = CONTEXT_FREE;
++        return PLDM_RDE_REQUESTER_SEND_FAIL;
++    }
++    std::vector<uint8_t> response(
++        sizeof(pldm_msg_hdr) + manager->negotiated_transfer_size, 0);
++    uint8_t* responseMsg = response.data();
++    size_t responseMsgSize = sizeof(pldm_msg_hdr) +
++                             manager->negotiated_transfer_size;
++    auto responsePtr = reinterpret_cast<struct pldm_msg*>(responseMsg);
++
++    rc = pldm_recv_at_network(eid, fd, instanceId, &responseMsg,
++                              &responseMsgSize, manager->net_id);
++    if (rc)
++    {
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        ctx->context_status = CONTEXT_FREE;
++        return PLDM_RDE_REQUESTER_RECV_FAIL;
++    }
++
++    if (DEBUG)
++    {
++        auto resourceId =
++            manager->resource_ids[ctx->current_pdr_resource->resource_id_index];
++        auto transferHandleCurrent = ctx->current_pdr_resource->transfer_handle;
++        std::cerr
++            << "Pushing response for Get Multipart receive for resource id: "
++            << std::to_string(resourceId)
++            << " and transfer handle: " << std::to_string(transferHandleCurrent)
++            << "...\n";
++    }
++    rc = pldm_rde_push_get_dictionary_response(
++        manager, ctx, responsePtr, responseMsgSize, responseHandlerCallback);
++    if (rc)
++    {
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        ctx->context_status = CONTEXT_FREE;
++        std::cerr << "Saving Dictionary Response Failed..." << std::endl;
++        return PLDM_RDE_REQUESTER_NOT_RESP_MSG;
++    }
++
++    return PLDM_RDE_REQUESTER_SUCCESS;
++}
++
++int processNextRdeRequest(int fd, uint8_t eid, int instanceId,
++                          struct pldm_rde_requester_manager* manager,
++                          struct pldm_rde_requester_context* ctx,
++                          const std::vector<uint8_t>& requestMsg)
++{
++    switch (ctx->next_command)
++    {
++        case PLDM_NEGOTIATE_REDFISH_PARAMETERS:
++            return processNegotiateRedfishParametersRequest(
++                fd, eid, instanceId, manager, ctx, requestMsg);
++
++        case PLDM_NEGOTIATE_MEDIUM_PARAMETERS:
++            return processNegotiateMediumParametersRequest(
++                fd, eid, instanceId, manager, ctx, requestMsg);
++
++        case PLDM_GET_SCHEMA_DICTIONARY:
++            return processGetNextDictionarySchema(fd, eid, instanceId, manager,
++                                                  ctx, requestMsg);
++
++        case PLDM_RDE_MULTIPART_RECEIVE:
++            return processRdeMultipartReceive(fd, eid, instanceId, manager, ctx,
++                                              requestMsg);
++
++        default:
++            return PLDM_RDE_REQUESTER_NOT_PLDM_RDE_MSG;
++    }
++}
++
++int performRdeDiscovery(const std::string& rdeDeviceId, int fd, int netId,
++                        uint8_t destEid, uint8_t instanceId)
++{
++    int rc = initManager(rdeDeviceId, netId);
++
++    int rdeContextIndex = getRdeContextForRdeDevice(rdeDeviceId);
++    if (rdeContextIndex == -1)
++    {
++        std::cerr
++            << "Unable to provide base context- Error in RDE discovery\n ";
++        return -1;
++    }
++
++    struct pldm_rde_requester_context baseContext =
++        rdeContexts[rdeContextIndex];
++
++    rc = pldm_rde_start_discovery(&baseContext);
++    if (rc)
++    {
++        std::cerr << "RDE Discovery failed due to context busy with ec: " << rc
++                  << "\n";
++        return -1;
++    }
++
++    struct pldm_rde_requester_manager* manager;
++    rc = getManagerForRdeDevice(rdeDeviceId, &manager);
++    if (rc)
++    {
++        std::cerr << "Failure to get RDE Manager for rde device with ec: " << rc
++                  << "\n";
++        return -1;
++    }
++
++    int retryCounter = 0;
++    while (true)
++    {
++        int requestBytes;
++        if (baseContext.requester_status ==
++            PLDM_RDE_REQUESTER_NO_PENDING_ACTION)
++        {
++            break;
++        }
++        if (rdeCommandRequestSize.find(baseContext.next_command) !=
++            rdeCommandRequestSize.end())
++        {
++            requestBytes = rdeCommandRequestSize[baseContext.next_command];
++        }
++        else
++        {
++            requestBytes = PLDM_MAX_REQUEST_BYTES;
++        }
++
++        std::vector<uint8_t> requestMsg(sizeof(pldm_msg_hdr) + requestBytes);
++        auto request = reinterpret_cast<pldm_msg*>(requestMsg.data());
++        std::cout << "Getting next RDE Discovery request...\n";
++
++        rc = pldm_rde_get_next_discovery_command(instanceId, manager,
++                                                 &baseContext, request);
++        if (rc)
++        {
++            std::cerr << "Not a valid request to process\n";
++            break;
++        }
++
++        rc = processNextRdeRequest(fd, destEid, 1, manager, &baseContext,
++                                   requestMsg);
++
++        if (rc)
++        {
++            std::cerr << "Unable to process next rde request: "
++                      << std::to_string(rc) << "\n";
++            break;
++        }
++        retryCounter++;
++        if (retryCounter > 5)
++        {
++            break;
++        }
++    }
++
++    if (DEBUG)
++    {
++        printRDENegotiateContext(manager);
++    }
++    return 0;
++}
++
++int performDictionaryDiscoveryForDevice(const std::string& rdeDeviceId, int fd,
++                                        uint8_t destEid, uint8_t instanceId)
++{
++    std::unordered_map<uint32_t, std::vector<uint8_t>> dictionaryRidMap;
++    std::unordered_map<uint32_t, std::tuple<uint8_t, uint8_t>>
++        dictionaryMetaRidMap;
++
++    dictionaryDeviceMap.insert({rdeDeviceId, dictionaryRidMap});
++
++    // For holding schema initial transfer flags - not being used right now
++    dictionaryMetaDeviceMap.insert({rdeDeviceId, dictionaryMetaRidMap});
++
++    int rdeContextIndex = getRdeContextForRdeDevice(rdeDeviceId);
++    if (rdeContextIndex == -1)
++    {
++        std::cerr << "Unable to provide base context- Error in RDE discovery\n";
++        return -1;
++    }
++
++    struct pldm_rde_requester_context baseContext =
++        rdeContexts[rdeContextIndex];
++    int rc = pldm_rde_init_get_dictionary_schema(&baseContext);
++    if (rc)
++    {
++        std::cerr << "PLDM RDE Init dictionary failed with ec: " << rc << "\n";
++        return rc;
++    }
++    if (DEBUG)
++    {
++        std::cerr << "Getting dictionary for context resource id : "
++                  << std::to_string(
++                         (baseContext.current_pdr_resource)->resource_id_index)
++                  << "\n";
++    }
++
++    struct pldm_rde_requester_manager* manager;
++    rc = getManagerForRdeDevice(rdeDeviceId, &manager);
++    if (rc)
++    {
++        std::cerr << "Failure to get RDE Manager for rde device with ec: " << rc
++                  << "\n";
++        return -1;
++    }
++
++    int retryCounter = 0;
++    while (retryCounter < MAX_RETRIES_FOR_REQUEST)
++    {
++        int requestBytes;
++        if (baseContext.requester_status ==
++            PLDM_RDE_REQUESTER_NO_PENDING_ACTION)
++        {
++            break;
++        }
++        if (rdeCommandRequestSize.find(baseContext.next_command) !=
++            rdeCommandRequestSize.end())
++        {
++            requestBytes = rdeCommandRequestSize[baseContext.next_command];
++        }
++        else
++        {
++            requestBytes = PLDM_MAX_REQUEST_BYTES;
++        }
++        std::vector<uint8_t> requestMsg(sizeof(pldm_msg_hdr) + requestBytes);
++        auto request = reinterpret_cast<pldm_msg*>(requestMsg.data());
++        std::cerr << "Getting next get dictionary request...\n";
++
++        rc = pldm_rde_get_next_dictionary_schema_command(
++            /*instanceId*/ instanceId, manager, &baseContext, request);
++
++        if (rc)
++        {
++            std::cerr << "Not a valid request to process\n";
++            return -1;
++        }
++
++        rc = processNextRdeRequest(fd, destEid, instanceId, manager,
++                                   &baseContext, requestMsg);
++
++        if (rc)
++        {
++            std::cerr << "Unable to process next rde request: "
++                      << std::to_string(rc) << "\n";
++            return -1;
++        }
++        retryCounter++;
++    }
++
++    return 0;
++}
+diff --git a/rded/helper/discovery/rde_discovery.hpp b/rded/helper/discovery/rde_discovery.hpp
+new file mode 100644
+index 0000000..2424cab
+--- /dev/null
++++ b/rded/helper/discovery/rde_discovery.hpp
+@@ -0,0 +1,18 @@
++#include "libpldm/requester/pldm_rde_requester.h"
++
++#include <iostream>
++#include <string>
++#include <vector>
++#pragma once
++
++#define RDE_NEGOTIATE_REDFISH_PARAMS_RESP_SIZE 12
++#define RDE_NEGOTIATE_REDFISH_MEDIUM_PARAMS_RESP_SIZE 6
++#define RDE_GET_DICT_SCHEMA_RESP_SIZE 6
++
++int performRdeDiscovery(const std::string& rdeDeviceId, int fd, int netId,
++                        uint8_t destEid, uint8_t instanceId);
++
++int performDictionaryDiscoveryForDevice(const std::string& rdeDeviceId, int fd,
++                                        uint8_t destEid, uint8_t instanceId);
++
++void cleanupDictionaries(const std::string &rdeDeviceId);
+\ No newline at end of file
+diff --git a/rded/helper/mctpsetup.hpp b/rded/helper/mctpsetup.hpp
+index 454baac..066704c 100644
+--- a/rded/helper/mctpsetup.hpp
++++ b/rded/helper/mctpsetup.hpp
+@@ -6,7 +6,7 @@
+ #include <mutex>
+ #include <string>
+ #include <vector>
+-
++#include <helper/common.hpp>
+ std::mutex m_mutex;
+ /**
+  * @brief Execute a CLI command and return the command line result
+@@ -41,7 +41,7 @@ std::string exec(const char* cmd)
+  *
+  */
+ int extractNewName(std::string mctpLinkString, std::string* name,
+-                     std::string* count)
++                   std::string* count)
+ {
+     size_t pos = 0;
+     std::string token;
+@@ -57,14 +57,25 @@ int extractNewName(std::string mctpLinkString, std::string* name,
+     {
+         mctpPorts.push_back(mctpLinkString);
+     }
+-    std::string lastEntry = mctpPorts.back();
+-    if ((pos = lastEntry.find("mctpserial")) != std::string::npos)
++
++    std::vector<std::string> temp;
++    for (auto port : mctpPorts)
+     {
+-        *name = lastEntry.substr(pos, 11);
+-        *count = lastEntry.substr(pos + 10, 1);
+-        return 0;
++        size_t p = 0;
++        if ((p = port.find("mctpserial")) != std::string::npos)
++        {
++            temp.emplace_back(port.substr(p, 11));
++        }
+     }
+-    return -1;
++
++    std::sort(temp.begin(), temp.end());
++    if (temp.size() == 0)
++    {
++        return -1;
++    }
++    *name = temp[temp.size() - 1];
++    *count = (*name).substr(pos + 10, 1);
++    return 0;
+ }
+ /**
+  * @brief Creating a unique network id from the udevid for a particular RDE
+@@ -105,7 +116,7 @@ int createNetIdFromUdevId(std::string udevid)
+  * @param[in] udevid - udev id of the RDE device, which is a unique identifier
+  * and remains same for the device even after reboots
+  */
+-int setupOnePort(std::string port, std::string udevid)
++int setupOnePort(const std::string& port, std::string udevid)
+ {
+     // TODO(b/284167548): Find an efficient way to set up MCTP without using CLI
+     // commands This might help us get rid of sleeps
+@@ -126,7 +137,10 @@ int setupOnePort(std::string port, std::string udevid)
+                   << " with retry counter: " << retryCounter << "\n";
+         // Executing link command
+         std::string linkCmd = "mctp link serial " + port + " &";
+-        std::cerr << "Executing: " << linkCmd << "\n";
++        if (DEBUG)
++        {
++            std::cerr << "Executing: " << linkCmd << "\n";
++        }
+         int sysRc = system(linkCmd.c_str());
+         if (sysRc)
+         {
+@@ -141,7 +155,10 @@ int setupOnePort(std::string port, std::string udevid)
+         std::string count;
+         std::string mctpLinkShow = "mctp link show";
+         std::string linkResult = exec(mctpLinkShow.c_str());
+-        std::cerr << "linkResult: " << linkResult << "\n";
++        if (DEBUG)
++        {
++            std::cerr << "Executing linkResult: " << linkResult << "\n";
++        }
+         sysRc = extractNewName(linkResult, &mctpName, &count);
+         if (sysRc)
+         {
+@@ -153,8 +170,11 @@ int setupOnePort(std::string port, std::string udevid)
+         networkId = createNetIdFromUdevId(udevid);
+ 
+         std::string upCmd = "mctp link set " + mctpName + " network " +
+-                             std::to_string(networkId) + " up";
+-        std::cerr << "Executing upcmd: " << upCmd << "\n";
++                            std::to_string(networkId) + " up";
++        if (DEBUG)
++        {
++            std::cerr << "Executing upcmd: " << upCmd << "\n";
++        }
+         std::string networkSetResponse = exec(upCmd.c_str());
+         if (networkSetResponse.find("invalid") != std::string::npos)
+         {
+@@ -166,13 +186,20 @@ int setupOnePort(std::string port, std::string udevid)
+         // Setting up local addresses
+         std::string localAddrCmd = "mctp addr add 8 dev " + mctpName;
+         std::string routeCmd = "mctp route add 9 via " + mctpName;
+-        std::cerr << "Executing local addr: " << localAddrCmd << "\n";
++        if (DEBUG)
++        {
++            std::cerr << "Executing local addr: " << localAddrCmd << "\n";
++        }
+         exec(localAddrCmd.c_str());
+-        std::cerr << "Executing routeCmd: " << routeCmd << "\n";
++        if (DEBUG)
++        {
++            std::cerr << "Executing routeCmd: " << routeCmd << "\n";
++        }
+         exec(routeCmd.c_str());
+         // Setting up routes and local address takes time
+         sleep(5);
+         setupComplete = true;
++        std::cout << "Setup completed for MCTP port: " << port << "\n";
+         break;
+     }
+     // unlock mutex
+diff --git a/rded/meson.build b/rded/meson.build
+index 5f5797c..f4bbeec 100644
+--- a/rded/meson.build
++++ b/rded/meson.build
+@@ -1,6 +1,7 @@
+ sources = [
+   'rded.cpp',
+-  'helper/discovery/base_discovery.cpp'
++  'helper/discovery/base_discovery.cpp',
++  'helper/discovery/rde_discovery.cpp',
+ ]
+ 
+ args = [
+diff --git a/rded/rded.cpp b/rded/rded.cpp
+index 4a39907..5d8c24f 100644
+--- a/rded/rded.cpp
++++ b/rded/rded.cpp
+@@ -1,6 +1,7 @@
+ #include "common/utils.hpp"
+ #include "helper/common.hpp"
+ #include "helper/discovery/base_discovery.hpp"
++#include "helper/discovery/rde_discovery.hpp"
+ 
+ #include <locale.h>
+ #include <signal.h>
+@@ -41,6 +42,7 @@ int fd; // MCTP Socket for RDE communication
+ std::map<std::string, int> deviceNetIdMap;
+ std::map<std::string, std::shared_ptr<sdbusplus::asio::dbus_interface>>
+     dbusIntfMap;
++std::unordered_map<std::string, std::string> objectPathDeviceId;
+ 
+ int initiateDiscovery(int fd, std::string udevId, int netId,
+                        uint8_t destEid, uint8_t instanceId)
+@@ -57,11 +59,37 @@ int initiateDiscovery(int fd, std::string udevId, int netId,
+         return rc;
+     }
+ 
+-    // TODO(@harshtya): Add RDE Negotiate Params discovery
+-    // TODO(@harshtya): Add get dictionaries for resource ids
++    std::cerr << "Initializing RDE Discovery...\n";
++    rc = performRdeDiscovery(udevId, fd, netId, destEid, instanceId);
++
++    if (rc)
++    {
++        std::cerr << "Failure in Base Discovery with error code: " << rc
++                  << "\n";
++        return rc;
++    }
++
++    rc = performDictionaryDiscoveryForDevice(udevId, fd, destEid, instanceId);
++
++    if (rc)
++    {
++        std::cerr << "Failure in getting dictionaries with error code: " << rc
++                  << "\n";
++        return rc;
++    }
+     return 0;
+ }
+ 
++void getDeviceIdForRemovedDevice(const std::string& objPath,
++                                 std::string* deviceId)
++{
++    auto it = objectPathDeviceId.find(objPath);
++    if (it != objectPathDeviceId.end())
++    {
++        *deviceId = it->second;
++    }
++}
++
+ int triggerRdeReactor(int fd)
+ {
+     /**
+@@ -83,116 +111,125 @@ int triggerRdeReactor(int fd)
+     // TODO(@kkachana,@harshtya): Add the enumeration code for already existing
+     // RDE devices in the Entity Manager service tree
+ 
+-    std::make_unique<sdbusplus::bus::match_t>(
++    auto matchAdd = std::make_unique<sdbusplus::bus::match_t>(
+         *systemBus, sdbusplus::bus::match::rules::interfacesAdded(),
+         [&objectServer, &prefixPath, &systemBus,
+          &fd](sdbusplus::message_t& reply) {
+-            sdbusplus::message::object_path changedObject;
+-            reply.read(changedObject);
+-            std::vector<std::pair<std::string, ChangedPropertiesType>>
+-                changedInterfaces;
+-            reply.read(changedInterfaces);
+-
+-            std::string vendorId;
+-            std::string udevid;
+-            std::string port;
++        sdbusplus::message::object_path changedObject;
++        reply.read(changedObject);
++        std::vector<std::pair<std::string, ChangedPropertiesType>>
++            changedInterfaces;
++        reply.read(changedInterfaces);
++
++        std::string vendorId;
++        std::string udevid;
++        std::string port;
+             for (const auto& [changedInterface, changedProps] :
+                  changedInterfaces)
++        {
++            if (changedInterface !=
++                "xyz.openbmc_project.Configuration.RdeSatelliteController")
+             {
+-                if (changedInterface !=
+-                    "xyz.openbmc_project.Configuration.RdeSatelliteController")
+-                {
+-                    continue;
+-                }
++                continue;
++            }
+ 
+-                if (DEBUG_ENABLED)
++            if (DEBUG_ENABLED)
++            {
++                std::cerr << "DEBUG: Changed object path: "
++                          << std::string(changedObject) << "\n";
++            }
++
++            for (auto& [key, value] : changedProps)
++            {
++                if (key == "VID")
+                 {
+-                    std::cerr << "DEBUG: Changed object path: "
+-                              << std::string(changedObject) << "\n";
++                    vendorId = std::get<std::string>(value);
+                 }
+-
+-                for (auto& [key, value] : changedProps)
++                else if (key == "USBPORT")
+                 {
+-                    if (key == "VID")
+-                    {
+-                        vendorId = std::get<std::string>(value);
+-                    }
+-                    else if (key == "USBPORT")
+-                    {
+-                        port = std::get<std::string>(value);
+-                    }
+-                    else if (key == "UDEVID")
+-                    {
+-                        udevid = std::get<std::string>(value);
+-                    }
++                    port = std::get<std::string>(value);
+                 }
+-                if (vendorId.empty() || port.empty() || udevid.empty())
++                else if (key == "UDEVID")
+                 {
+-                    std::cerr << "Matcher does not have required properties\n";
+-                    return;
++                    udevid = std::get<std::string>(value);
+                 }
++            }
++            if (vendorId.empty() || port.empty() || udevid.empty())
++            {
++                std::cerr << "Matcher does not have required properties\n";
++                return;
++            }
+ 
+-                int netId = setupOnePort(port, udevid); // MCTP Setup
+-                deviceNetIdMap.insert({udevid, netId});
++            int netId = setupOnePort(port, udevid); // MCTP Setup
++            deviceNetIdMap.insert({udevid, netId});
+ 
+                 int rc = initiateDiscovery(fd, udevid, netId, DEST_EID,
+                                             INSTANCE_ID);
+-                if (rc)
+-                {
++            if (rc)
++            {
+                     std::cerr
+                         << "PLDM/RDE Discovery failed for device: " << port
+-                        << ", udev: " << udevid << "\n";
+-                    return;
+-                }
++                          << ", udev: " << udevid << "\n";
++                cleanupDictionaries(udevid);
++                return;
++            }
+ 
+-                std::string objectPath = prefixPath + udevid;
+-                if (DEBUG_ENABLED)
+-                {
++            std::string objectPath = prefixPath + udevid;
++            if (DEBUG_ENABLED)
++            {
+                     std::cerr << "New object path created: " << objectPath
+                               << "\n";
+-                }
++            }
+ 
+-                std::shared_ptr<sdbusplus::asio::dbus_interface> iface =
+-                    objectServer.add_interface(objectPath,
+-                                               "xyz.openbmc_project.RdeDevice");
+-                iface->register_property(
++            std::shared_ptr<sdbusplus::asio::dbus_interface> iface =
++                objectServer.add_interface(objectPath,
++                                           "xyz.openbmc_project.RdeDevice");
++            iface->register_property(
+                     "VID", vendorId,
+                     sdbusplus::asio::PropertyPermission::readOnly);
+-                iface->register_property(
++            iface->register_property(
+                     "USBPORT", port,
+                     sdbusplus::asio::PropertyPermission::readOnly);
+-                iface->register_property(
+-                    "UDEVID", udevid,
+-                    sdbusplus::asio::PropertyPermission::readOnly);
++            iface->register_property(
++                "UDEVID", udevid,
++                sdbusplus::asio::PropertyPermission::readOnly);
+ 
+-                // TODO(@harshtya): Add method to handle RDE operation requests
++            // TODO(@harshtya): Add method to handle RDE operation requests
+ 
+-                iface->initialize();
+-                dbusIntfMap.insert({std::string(changedObject), iface});
+-            }
++            iface->initialize();
++            dbusIntfMap.insert({std::string(changedObject), iface});
++            objectPathDeviceId.insert({std::string(changedObject), udevid});
++        }
+         });
+ 
+     // Remove object path if the device is removed
+-    std::make_unique<sdbusplus::bus::match_t>(
++    auto matchRemove = std::make_unique<sdbusplus::bus::match_t>(
+         *systemBus, sdbusplus::bus::match::rules::interfacesRemoved(),
+         [&objectServer](sdbusplus::message_t& reply) {
+-            sdbusplus::message::object_path changedObject;
+-            std::vector<std::string> interfacesRemoved;
+-            reply.read(changedObject, interfacesRemoved);
++        sdbusplus::message::object_path changedObject;
++        std::vector<std::string> interfacesRemoved;
++        reply.read(changedObject, interfacesRemoved);
+ 
+-            auto it = dbusIntfMap.find(std::string(changedObject));
+-            if (it != dbusIntfMap.end())
+-            {
++        auto it = dbusIntfMap.find(std::string(changedObject));
++        if (it != dbusIntfMap.end())
++        {
+                 std::shared_ptr<sdbusplus::asio::dbus_interface> iface =
+                     it->second;
+-                auto removed = objectServer.remove_interface(iface);
++            auto removed = objectServer.remove_interface(iface);
+                 std::cout << "Removed RDE Device from tree: " << removed
+                           << "\n";
+-                dbusIntfMap.erase(std::string(changedObject));
+-                // TODO (@harshtya): clean up the manager for this object path
+-                // TODO (@harshtya): clean up the dictionaries
++            dbusIntfMap.erase(std::string(changedObject));
++            std::string deviceId;
++            getDeviceIdForRemovedDevice(std::string(changedObject), &deviceId);
++
++            if (!deviceId.empty())
++            {
++                cleanupDictionaries(deviceId);
+             }
+-            return;
++            // TODO (@harshtya): clean up the manager for this object path
++            // TODO (@harshtya): clean up the dictionaries
++        }
++        return;
+         });
+ 
+     systemBus->request_name("xyz.openbmc_project.rdeoperation");
+-- 
+2.34.1
+

@@ -1,0 +1,2437 @@
+From dbbfd7054eb88e5495060444fb2b99837530a5ea Mon Sep 17 00:00:00 2001
+From: Harsh Tyagi <harshtya@google.com>
+Date: Thu, 6 Jul 2023 22:22:25 +0000
+Subject: [PATCH] Enable RDE Operation in PLDM
+
+%% original patch: 0007-Enable-RDE-Operation-in-PLDM.patch
+---
+ rded/helper/common.hpp                      |   2 +
+ rded/helper/discovery/rde_discovery.cpp     |  88 +-
+ rded/helper/discovery/rde_discovery.hpp     |  13 +-
+ rded/helper/mctpsetup.hpp                   | 209 ++++-
+ rded/helper/rde_operation/rde_operation.cpp | 915 ++++++++++++++++++++
+ rded/helper/rde_operation/rde_operation.hpp |  27 +
+ rded/helper/resource_id_mapper.hpp          | 305 +++++++
+ rded/meson.build                            |   1 +
+ rded/rded.cpp                               | 529 +++++++++--
+ 9 files changed, 1969 insertions(+), 120 deletions(-)
+ create mode 100644 rded/helper/rde_operation/rde_operation.cpp
+ create mode 100644 rded/helper/rde_operation/rde_operation.hpp
+ create mode 100644 rded/helper/resource_id_mapper.hpp
+
+diff --git a/rded/helper/common.hpp b/rded/helper/common.hpp
+index 28508a9..c7b5416 100644
+--- a/rded/helper/common.hpp
++++ b/rded/helper/common.hpp
+@@ -2,6 +2,8 @@
+ 
+ #define PLDM_MAX_REQUEST_BYTES 2048
+ #define MAX_RETRIES_FOR_REQUEST 500
++#define MAX_RETRIES_MCTP_SOCK_FAILURE 5
++#define MAX_LOOP_ITERATION_STATE_MACHINE 50
+ constexpr bool DEBUG = false;
+ enum ContextState
+ {
+diff --git a/rded/helper/discovery/rde_discovery.cpp b/rded/helper/discovery/rde_discovery.cpp
+index 96f6398..60aafdb 100644
+--- a/rded/helper/discovery/rde_discovery.cpp
++++ b/rded/helper/discovery/rde_discovery.cpp
+@@ -30,7 +30,6 @@ std::unordered_map<std::string,
+     dictionaryMetaDeviceMap;
+ 
+ int rdeContextCounter = 0;
+-uint8_t numberOfResources = 12;
+ std::unordered_map<uint8_t, int> rdeCommandRequestSize = {
+     {PLDM_NEGOTIATE_REDFISH_PARAMETERS, 3},
+     {PLDM_NEGOTIATE_MEDIUM_PARAMETERS, 4},
+@@ -80,7 +79,7 @@ struct pldm_rde_requester_context*
+     allocateMemoryToContexts(uint8_t numberOfContexts)
+ {
+     int end = rdeContextCounter + numberOfContexts;
+-    for (rdeContextCounter = 0; rdeContextCounter < end; rdeContextCounter++)
++    for (; rdeContextCounter < end; rdeContextCounter++)
+     {
+         struct pldm_rde_requester_context* currentCtx =
+             (struct pldm_rde_requester_context*)malloc(
+@@ -91,8 +90,7 @@ struct pldm_rde_requester_context*
+         }
+         rdeContexts.emplace_back(*currentCtx);
+     }
+-
+-    return &rdeContexts[0];
++    return &rdeContexts[rdeContextCounter - 1];
+ }
+ 
+ void freeMemory(void* context)
+@@ -122,7 +120,8 @@ int initManager(const std::string& rdeDeviceId, int netId)
+     std::cout << "Initializing RDE Manager...\n";
+     std::vector<uint32_t> resourceIds = {
+         0x00000000, 0x00010000, 0x00020000, 0x00030000, 0x00040000, 0x00050000,
+-        0x00060000, 0x00070000, 0x00080000, 0x00090000, 0x000a0000, 0xffffffff};
++        0x00060000, 0x00070000, 0x00080000, 0x00090000, 0x000a0000, 0x000b0000,
++        0x000c0000, 0x000d0000, 0x000e0000, 0x000f0000, 0x00100000, 0xffffffff};
+ 
+     struct pldm_rde_requester_manager* manager =
+         new pldm_rde_requester_manager();
+@@ -130,7 +129,7 @@ int initManager(const std::string& rdeDeviceId, int netId)
+     managerCtxCounter.insert({rdeDeviceId, rdeContextCounter});
+     int rc = pldm_rde_init_context(rdeDeviceId.c_str(), netId, manager,
+                                    mcConcurrency, mcTransferSize, mcFeatures,
+-                                   numberOfResources, &resourceIds.front(),
++                                   resourceIds.size(), &resourceIds.front(),
+                                    allocateMemoryToContexts, freeMemory);
+ 
+     if (rc)
+@@ -281,10 +280,10 @@ int verifyChecksumForMultipartRecv(const std::vector<uint8_t>& payload)
+ {
+     uint32_t payloadLength = payload.size();
+     auto calculatedChecksum = crc32(&(payload.front()), payloadLength - 4);
+-    uint8_t byte0 = payload.at(payloadLength - 4);
+-    uint8_t byte1 = payload.at(payloadLength - 3);
+-    uint8_t byte2 = payload.at(payloadLength - 2);
+-    uint8_t byte3 = payload.at(payloadLength - 1);
++    uint8_t byte0 = payload[payloadLength - 4];
++    uint8_t byte1 = payload[payloadLength - 3];
++    uint8_t byte2 = payload[payloadLength - 2];
++    uint8_t byte3 = payload[payloadLength - 1];
+ 
+     uint32_t checksumReceived = byte0 | byte1 << 8 | byte2 << 16 | byte3 << 24;
+     if (calculatedChecksum == checksumReceived)
+@@ -298,13 +297,9 @@ int verifyChecksumForMultipartRecv(const std::vector<uint8_t>& payload)
+         }
+         return PLDM_RDE_REQUESTER_SUCCESS;
+     }
+-    else
+-    {
+-        std::cerr
+-            << "Checksum mismatch for request id/resource id in multipart receive"
+-            << std::endl;
+-        return PLDM_RDE_REQUESTER_RECV_FAIL;
+-    }
++    std::cerr
++        << "Checksum mismatch for request id/resource id in multipart receive"
++        << std::endl;
+     return PLDM_RDE_REQUESTER_RECV_FAIL;
+ }
+ 
+@@ -585,7 +580,7 @@ int performRdeDiscovery(const std::string& rdeDeviceId, int fd, int netId,
+         if (rc)
+         {
+             std::cerr << "Not a valid request to process\n";
+-            break;
++            return -1;
+         }
+ 
+         rc = processNextRdeRequest(fd, destEid, 1, manager, &baseContext,
+@@ -595,7 +590,7 @@ int performRdeDiscovery(const std::string& rdeDeviceId, int fd, int netId,
+         {
+             std::cerr << "Unable to process next rde request: "
+                       << std::to_string(rc) << "\n";
+-            break;
++            return -1;
+         }
+         retryCounter++;
+         if (retryCounter > 5)
+@@ -655,6 +650,7 @@ int performDictionaryDiscoveryForDevice(const std::string& rdeDeviceId, int fd,
+         return -1;
+     }
+ 
++    std::cout << "Getting Dictionaries..." << std::endl;
+     int retryCounter = 0;
+     while (retryCounter < MAX_RETRIES_FOR_REQUEST)
+     {
+@@ -675,7 +671,14 @@ int performDictionaryDiscoveryForDevice(const std::string& rdeDeviceId, int fd,
+         }
+         std::vector<uint8_t> requestMsg(sizeof(pldm_msg_hdr) + requestBytes);
+         auto request = reinterpret_cast<pldm_msg*>(requestMsg.data());
+-        std::cerr << "Getting next get dictionary request...\n";
++
++        if (baseContext.next_command == PLDM_GET_SCHEMA_DICTIONARY)
++        {
++            std::cerr << "Getting dictionary for "
++                      << manager->resource_ids[baseContext.current_pdr_resource
++                                         ->resource_id_index]
++                      << "..." << std::endl;
++        }
+ 
+         rc = pldm_rde_get_next_dictionary_schema_command(
+             /*instanceId*/ instanceId, manager, &baseContext, request);
+@@ -700,3 +703,48 @@ int performDictionaryDiscoveryForDevice(const std::string& rdeDeviceId, int fd,
+ 
+     return 0;
+ }
++
++int getRdeFreeContextForRdeDevice(
++    const std::string& rdeDevice, struct pldm_rde_requester_context* baseContext)
++{
++    auto it = managerCtxCounter.find(rdeDevice);
++    if (it != managerCtxCounter.end())
++    {
++        *baseContext = rdeContexts[it->second];
++        if (baseContext->context_status != CONTEXT_FREE)
++        {
++            return RDE_CONTEXT_NOT_FREE;
++        }
++        return RDE_CONTEXT_FREE;
++    }
++    return RDE_NO_CONTEXT_FOUND;
++}
++
++int getDictionaryForRidDev(const std::string& rdeDeviceId, uint32_t resourceId,
++                           [[maybe_unused]] uint8_t** dictElem,
++                           [[maybe_unused]] uint32_t* dictLength)
++{
++    std::unordered_map<uint32_t, std::vector<uint8_t>>* dictionaryRidMap;
++
++    std::optional<std::unordered_map<uint32_t, std::vector<uint8_t>>*>
++        dictionaryRidMapOpt = getDictionaryMap(rdeDeviceId);
++    
++    if (!dictionaryRidMapOpt.has_value())
++    {
++        std::cerr << "Unable to fetch dictionary from map while storing\n";
++        return PLDM_RDE_NO_PDR_RESOURCES_FOUND;
++    }
++    dictionaryRidMap = dictionaryRidMapOpt.value();
++    auto it = dictionaryRidMap->find(resourceId);
++    if (it != dictionaryRidMap->end())
++    {
++        *dictElem = &it->second.front();
++        *dictLength = it->second.size();
++        return PLDM_RDE_REQUESTER_SUCCESS;
++    }
++    else
++    {
++        dictElem = nullptr;
++    }
++    return PLDM_RDE_NO_PDR_RESOURCES_FOUND;
++}
+diff --git a/rded/helper/discovery/rde_discovery.hpp b/rded/helper/discovery/rde_discovery.hpp
+index 2424cab..be3d13c 100644
+--- a/rded/helper/discovery/rde_discovery.hpp
++++ b/rded/helper/discovery/rde_discovery.hpp
+@@ -15,4 +15,15 @@ int performRdeDiscovery(const std::string& rdeDeviceId, int fd, int netId,
+ int performDictionaryDiscoveryForDevice(const std::string& rdeDeviceId, int fd,
+                                         uint8_t destEid, uint8_t instanceId);
+ 
+-void cleanupDictionaries(const std::string &rdeDeviceId);
+\ No newline at end of file
++void cleanupDictionaries(const std::string& rdeDeviceId);
++
++int getRdeFreeContextForRdeDevice(
++    const std::string& rdeDevice,
++    struct pldm_rde_requester_context* baseContext);
++
++int getDictionaryForRidDev(const std::string& rdeDeviceId, uint32_t resourceId,
++                           uint8_t** dictElem, uint32_t* dictLength);
++
++int getManagerForRdeDevice(const std::string& rdeDevice,
++                           struct pldm_rde_requester_manager** manager);
++void cleanupDictionaries(const std::string& rdeDeviceId);
+diff --git a/rded/helper/mctpsetup.hpp b/rded/helper/mctpsetup.hpp
+index 066704c..56f51fa 100644
+--- a/rded/helper/mctpsetup.hpp
++++ b/rded/helper/mctpsetup.hpp
+@@ -1,13 +1,18 @@
++#include <helper/common.hpp>
++
+ #include <array>
+ #include <cstdlib>
+ #include <iostream>
+-#include <map>
++#include <unordered_map>
+ #include <memory>
+ #include <mutex>
++#include <optional>
+ #include <string>
++#include <unordered_set>
+ #include <vector>
+-#include <helper/common.hpp>
++
+ std::mutex m_mutex;
++std::unordered_map<std::string, std::string> portToUdevIdMap;
+ /**
+  * @brief Execute a CLI command and return the command line result
+  */
+@@ -26,6 +31,42 @@ std::string exec(const char* cmd)
+     }
+     return result;
+ }
++
++std::optional<std::unordered_set<std::string>>
++    getActiveMctpPorts(std::string mctpLinkString)
++{
++    size_t pos = 0;
++    std::string delimiter = "\n";
++    std::unordered_set<std::string> mctpPorts;
++    while ((pos = mctpLinkString.find(delimiter)) != std::string::npos)
++    {
++        std::string token = mctpLinkString.substr(0, pos);
++        size_t p = 0;
++        if ((p = token.find("mctpserial")) != std::string::npos)
++        {
++            // Take the first 11 characters from the output string
++            // That will be of format `mctpserial0` - 11 chars
++            mctpPorts.insert(token.substr(p, 11));
++        }
++        mctpLinkString = mctpLinkString.substr(pos + delimiter.length());
++    }
++    if (!mctpLinkString.empty())
++    {
++        size_t p;
++        if ((p = mctpLinkString.find("mctpserial")) != std::string::npos)
++        {
++            // Works only for 9 mackback trays
++            mctpPorts.insert(mctpLinkString.substr(p, 11));
++        }
++    }
++
++    if (mctpPorts.empty())
++    {
++        return std::nullopt;
++    }
++    return mctpPorts;
++}
++
+ /**
+  * @brief Extract the name from the command line result
+  * The result returns a string of the format
+@@ -40,42 +81,37 @@ std::string exec(const char* cmd)
+  * in "mctpserial0"
+  *
+  */
+-int extractNewName(std::string mctpLinkString, std::string* name,
+-                   std::string* count)
++std::optional<std::string> extractNewName(const std::string& preSetupOutput,
++                                          const std::string& postSetupOutput)
+ {
+-    size_t pos = 0;
+-    std::string token;
+-    std::string delimiter = "\n";
+-    std::vector<std::string> mctpPorts;
+-    while ((pos = mctpLinkString.find(delimiter)) != std::string::npos)
+-    {
+-        token = mctpLinkString.substr(0, pos);
+-        mctpPorts.push_back(token);
+-        mctpLinkString.erase(0, pos + delimiter.length());
+-    }
+-    if (!mctpLinkString.empty())
++    std::optional<std::unordered_set<std::string>> mctpPortsPreOpt =
++        getActiveMctpPorts(preSetupOutput);
++
++    std::unordered_set<std::string> preSetupPorts;
++
++    if (mctpPortsPreOpt.has_value())
+     {
+-        mctpPorts.push_back(mctpLinkString);
++        preSetupPorts = mctpPortsPreOpt.value();
+     }
+ 
+-    std::vector<std::string> temp;
+-    for (auto port : mctpPorts)
++    std::optional<std::unordered_set<std::string>> mctpPortsPostOpt =
++        getActiveMctpPorts(postSetupOutput);
++
++    if (mctpPortsPostOpt.has_value())
+     {
+-        size_t p = 0;
+-        if ((p = port.find("mctpserial")) != std::string::npos)
++        std::unordered_set<std::string> postSetupPorts =
++            mctpPortsPostOpt.value();
++        for (auto port : postSetupPorts)
+         {
+-            temp.emplace_back(port.substr(p, 11));
++            auto it = preSetupPorts.find(port);
++            if (it == preSetupPorts.end())
++            {
++                return port;
++            }
+         }
+     }
+-
+-    std::sort(temp.begin(), temp.end());
+-    if (temp.size() == 0)
+-    {
+-        return -1;
+-    }
+-    *name = temp[temp.size() - 1];
+-    *count = (*name).substr(pos + 10, 1);
+-    return 0;
++    std::cerr << "Link command failed\n";
++    return std::nullopt;
+ }
+ /**
+  * @brief Creating a unique network id from the udevid for a particular RDE
+@@ -105,6 +141,76 @@ int createNetIdFromUdevId(std::string udevid)
+         netId = netId + stoi(udevid);
+     return netId;
+ }
++
++/**
++ * @brief kill all the mctp serial links produced after executing the cmd in
++ * paramcmd in param
++ *
++ * @param[in] - grepLinkCmd: Commnad for getting mctp serial links
++*/
++void killMctpSerialLinks(const std::string& grepLinkCmd)
++{
++    std::string output = exec(grepLinkCmd.c_str());
++    std::vector<int> pids;
++    std::istringstream iss(output);
++    std::cerr << "Output for " << grepLinkCmd << ": \n" << output << "\n";
++    std::string line;
++    while (std::getline(iss, line))
++    {
++        // Create a stringstream from the input line
++        std::istringstream lineStream(line);
++        int pid;
++        if ((lineStream >> pid) && (line.find("grep") == std::string::npos) &&
++            (line.find("ps") == std::string::npos))
++        {
++            pids.emplace_back(pid);
++        }
++    }
++
++    for (const int& pid : pids)
++    {
++        std::string killCmd = std::format("kill -9 {}", pid);
++        std::cerr << "Killing existing mctp link"
++                  << " with " << killCmd << ".... Status: ";
++        exec(killCmd.c_str());
++        std::cerr << "Successfully completed" << std::endl;
++    }
++    if (pids.size() > 0)
++    {
++        // Sleep since unlinking might take a bit of time
++        sleep(2);
++    }
++}
++
++/**
++ * @brief Clean up existing mctp links for a particular device
++ *
++ * @param[in] - udevId: device id
++*/
++void cleanupMctpLink(const std::string& udevId)
++{
++    std::cerr
++        << "Checking if the mctp port exists after removal as a link...\n";
++
++    // check for the particular device if any mctp link present
++    auto it = portToUdevIdMap.find(udevId);
++    if (it != portToUdevIdMap.end())
++    {
++        std::string port = it->second;
++
++        std::cerr << "MCTP links serial removal executing for " << udevId
++                  << "\n";
++        std::string grepSerialLinks =
++            std::format("ps | grep \"mctp link serial {}\"", port);
++        killMctpSerialLinks(grepSerialLinks);
++    }
++    else
++    {
++        std::cerr << "No mctp link found to clean for udevId:" << udevId
++                  << "\n";
++    }
++}
++
+ /**
+  * @brief Sets up MCTP on on "mctpserial" port
+  *
+@@ -126,16 +232,32 @@ int setupOnePort(const std::string& port, std::string udevid)
+ 
+     // Mutex lock so that another device setup doesn't hinder the MCTP setup
+     m_mutex.lock();
+-    int retryCounter = 0;
+     bool setupComplete = false;
++    std::string mctpLinkShow = "mctp link show";
+     // lock mutex
+     int networkId;
+-    while (retryCounter < 4)
++    for (int retryCounter = 0; retryCounter < MAX_RETRIES_MCTP_SOCK_FAILURE;
++         retryCounter++)
+     {
+-        retryCounter++;
+         std::cerr << "Triggering MCTP setup on port: " << port
+                   << " with retry counter: " << retryCounter << "\n";
+-        // Executing link command
++
++        // Remove the existing port if running for the first time
++        if (portToUdevIdMap.size() == 0)
++        {
++            std::string grepAllMctpLinks = "ps | grep \"mctp link serial\"";
++            std::cerr << "Checking if any existing mctp links found...\n";
++            killMctpSerialLinks(grepAllMctpLinks);
++        }
++
++        // Executing link command pre setup to see current active ports
++        std::string linkResultPreSetup = exec(mctpLinkShow.c_str());
++        if (DEBUG)
++        {
++            std::cerr << "Executing linkResult pre setup: "
++                      << linkResultPreSetup << std::endl;
++        }
++
+         std::string linkCmd = "mctp link serial " + port + " &";
+         if (DEBUG)
+         {
+@@ -146,21 +268,30 @@ int setupOnePort(const std::string& port, std::string udevid)
+         {
+             std::cerr << "Error in setting up mctp link with return code: "
+                       << std::to_string(sysRc) << "\n";
+-            return -1;
++            continue; // retry if link command fails
+         }
++
++        // Replace the new port in map
++        portToUdevIdMap.erase(udevid);
++        portToUdevIdMap.emplace(udevid, port);
+         // MCTP link command takes some time to finish - hence a sleep of 5s
+         sleep(5);
+         // Extract name:
+         std::string mctpName;
+-        std::string count;
+-        std::string mctpLinkShow = "mctp link show";
+         std::string linkResult = exec(mctpLinkShow.c_str());
+         if (DEBUG)
+         {
+             std::cerr << "Executing linkResult: " << linkResult << "\n";
+         }
+-        sysRc = extractNewName(linkResult, &mctpName, &count);
+-        if (sysRc)
++
++        std::optional<std::string> mctpNameOpt =
++            extractNewName(linkResultPreSetup, linkResult);
++
++        if (mctpNameOpt.has_value())
++        {
++            mctpName = mctpNameOpt.value();
++        }
++        else
+         {
+             std::cerr
+                 << "No mctp serial connection found. MCTP Link failed...\n";
+diff --git a/rded/helper/rde_operation/rde_operation.cpp b/rded/helper/rde_operation/rde_operation.cpp
+new file mode 100644
+index 0000000..ab36eeb
+--- /dev/null
++++ b/rded/helper/rde_operation/rde_operation.cpp
+@@ -0,0 +1,915 @@
++#include "libbej/bej_dictionary.h"
++#include "libpldm/base.h"
++#include "libpldm/pldm.h"
++#include "libpldm/pldm_rde.h"
++#include "libpldm/requester/pldm_rde_requester.h"
++#include "libpldm/utils.h"
++
++#include "helper/common.hpp"
++#include "helper/discovery/base_discovery.hpp"
++#include "helper/discovery/rde_discovery.hpp"
++#include "json.hpp"
++#include "libbej/bej_decoder_json.hpp"
++#include "libbej/bej_encoder_json.hpp"
++
++#include <chrono>
++#include <cstring>
++#include <ctime>
++#include <iostream>
++#include <map>
++#include <tuple>
++#include <vector>
++
++using json = nlohmann::json;
++
++std::map<uint8_t, std::vector<uint8_t>> responseRequestMap;
++
++std::map<uint8_t, int> rdeOpCommandRequestSize = {
++    {PLDM_RDE_OPERATION_INIT, 18},
++    {PLDM_RDE_OPERATION_STATUS, 18},
++    {PLDM_RDE_OPERATION_COMPLETE, 6},
++    {PLDM_RDE_MULTIPART_RECEIVE, 7},
++    {PLDM_RDE_OPERATION_KILL, 7}};
++
++int cleanupRequestId(uint8_t requestId, struct pldm_rde_requester_context* ctx)
++{
++    responseRequestMap.erase(requestId);
++    free_rde_op_init_context(ctx);
++    return 0;
++}
++
++void processOperationCompleteOrKill(int fd, uint8_t eid, int instanceId,
++                                    struct pldm_rde_requester_manager* manager,
++                                    struct pldm_rde_requester_context* ctx,
++                                    uint8_t operation)
++{
++    int requestBytes;
++    if (rdeOpCommandRequestSize.find(operation) !=
++        rdeOpCommandRequestSize.end())
++    {
++        requestBytes = rdeOpCommandRequestSize[operation];
++    }
++    else
++    {
++        requestBytes = PLDM_MAX_REQUEST_BYTES;
++    }
++    std::vector<uint8_t> requestMsg(sizeof(pldm_msg_hdr) + requestBytes);
++    auto request = reinterpret_cast<pldm_msg*>(requestMsg.data());
++
++    if (operation == PLDM_RDE_OPERATION_KILL)
++    {
++        std::cerr << "Sending operation kill request" << std::endl;
++        std::cerr << "with request bytes: " << requestBytes << std::endl;
++        get_pldm_rde_operation_kill_request(instanceId, ctx, request);
++    }
++    else if (operation == PLDM_RDE_OPERATION_COMPLETE)
++    {
++        std::cerr << "Sending operation complete request" << std::endl;
++        std::cerr << "with request bytes: " << requestBytes << std::endl;
++        get_pldm_rde_operation_complete_request(instanceId, ctx, request);
++    }
++    else
++    {
++        std::cerr << "Wrong number of bytes in workaround!" << std::endl;
++    }
++
++    int rc = ctx->context_status = CONTEXT_BUSY;
++    ctx->requester_status = PLDM_RDE_REQUESTER_WAITING_FOR_RESPONSE;
++
++    int i = 0;
++    while (i < MAX_RETRIES_MCTP_SOCK_FAILURE)
++    {
++        rc = pldm_send_at_network(eid, manager->net_id, fd, requestMsg.data(),
++                                  requestMsg.size());
++        if (rc)
++        {
++            ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++            ctx->context_status = CONTEXT_FREE;
++            std::cerr
++                << "Message failed while sending on network id in op kill/complete˝: "
++                << std::to_string(manager->net_id) << " with retry: " << i
++                << std::endl;
++        }
++        else
++        {
++            break;
++        }
++        i++;
++        if (i == MAX_RETRIES_MCTP_SOCK_FAILURE)
++        {
++            std::cerr << "Op Kill send failed with all retries" << std::endl;
++            return;
++        }
++    }
++
++    std::vector<uint8_t> response(sizeof(pldm_msg_hdr) +
++                                  PLDM_MAX_REQUEST_BYTES);
++    uint8_t* responseMsg = response.data();
++    size_t responseMsgSize = sizeof(pldm_msg_hdr) + PLDM_MAX_REQUEST_BYTES;
++    // auto responsePtr = reinterpret_cast<struct pldm_msg*>(responseMsg);
++
++    rc = pldm_recv_at_network(eid, fd, instanceId, &responseMsg,
++                              &responseMsgSize, manager->net_id);
++    if (rc)
++    {
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        ctx->context_status = CONTEXT_FREE;
++        std::cerr
++            << "Message failed while receiving in the workaround on network id: "
++            << std::to_string(manager->net_id) << "\n";
++    }
++    std::cerr << "Operation request sent/received successfully" << std::endl;
++}
++
++void processWorkaroundForFailures(int fd, uint8_t eid, int instanceId,
++                                  struct pldm_rde_requester_manager* manager,
++                                  struct pldm_rde_requester_context* ctx)
++{
++    // operation Kill with context  get_rde_op_kill_request()
++    // Get bytes for operation complete
++    std::cerr << "Processing from wrokaround!" << std::endl;
++    processOperationCompleteOrKill(fd, eid, instanceId, manager, ctx,
++                                   PLDM_RDE_OPERATION_KILL);
++    processOperationCompleteOrKill(fd, eid, instanceId, manager, ctx,
++                                   PLDM_RDE_OPERATION_COMPLETE);
++    ctx->next_command = PLDM_RDE_REQUESTER_NO_NEXT_COMMAND_FOUND;
++    ctx->context_status = CONTEXT_FREE;
++    ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++    std::cerr << "Workaround complete~ mBMC should be unstuck!" << std::endl;
++    return;
++}
++int getResponseForRequestId(uint8_t requestId, uint8_t** payload,
++                            uint32_t* length)
++{
++    auto it = responseRequestMap.find(requestId);
++    if (it != responseRequestMap.end())
++    {
++        *payload = &it->second.front();
++        *length = it->second.size();
++        return 0;
++    }
++    std::cerr << "Request id not found\n";
++    return 1;
++}
++
++int verifyChecksumForMultipartRecv2(const std::vector<uint8_t>& payload)
++{
++    uint32_t payloadLength = payload.size();
++    auto calculatedChecksum = crc32(&(payload.front()), payloadLength - 4);
++    uint8_t byte0 = payload.at(payloadLength - 4);
++    uint8_t byte1 = payload.at(payloadLength - 3);
++    uint8_t byte2 = payload.at(payloadLength - 2);
++    uint8_t byte3 = payload.at(payloadLength - 1);
++
++    uint32_t checksumReceived = byte0 | byte1 << 8 | byte2 << 16 | byte3 << 24;
++    if (calculatedChecksum == checksumReceived)
++    {
++        if (DEBUG)
++        {
++            std::cerr << "For RDE Op: Checksum Verified, Calculated Checksum: "
++                      << std::to_string(calculatedChecksum)
++                      << " , Received Checksum: "
++                      << std::to_string(checksumReceived) << std::endl;
++        }
++        return PLDM_RDE_REQUESTER_SUCCESS;
++    }
++    else
++    {
++        std::cerr
++            << "Checksum mismatch for request id/resource id in multipart receive"
++            << std::endl;
++        return PLDM_RDE_REQUESTER_RECV_FAIL;
++    }
++    return PLDM_RDE_REQUESTER_RECV_FAIL;
++}
++
++void readRequestCallback(struct pldm_rde_requester_manager* manager,
++                         struct pldm_rde_requester_context* ctx,
++                         /*payload_array*/ uint8_t** payload,
++                         /*payloadLength*/ uint32_t payloadLength,
++                         bool hasChecksum)
++{
++    if (DEBUG)
++    {
++        std::cerr << "Processing resp callback for netid: " << manager->net_id
++                  << std::endl;
++    }
++    struct rde_operation* operationCtx =
++        (struct rde_operation*)ctx->operation_ctx;
++    uint8_t requestId = operationCtx->request_id;
++
++    auto it = responseRequestMap.find(requestId);
++    std::vector<uint8_t>* collectedPayload;
++    if (it != responseRequestMap.end())
++    {
++        collectedPayload = &(it->second);
++        collectedPayload->insert(it->second.end(), *payload,
++                                 (*payload) + payloadLength);
++    }
++    else
++    {
++        responseRequestMap[requestId] =
++            std::vector<uint8_t>(*payload, *payload + payloadLength);
++        collectedPayload = &(responseRequestMap[requestId]);
++    }
++    if (DEBUG)
++    {
++        std::cerr << "Payload Length inside creating map: "
++                  << std::to_string(payloadLength) << "\n";
++    }
++    if (hasChecksum)
++    {
++        int rc = verifyChecksumForMultipartRecv2(*collectedPayload);
++        if (rc)
++        {
++            std::cerr << "Checksum failed for request id: " +
++                             std::to_string(requestId);
++        }
++        else
++        {
++            if (DEBUG)
++            {
++                std::cerr << "Checksum verifies for request id: "
++                          << std::to_string(requestId) << "\n";
++            }
++            // Remove the checksum from the payload
++            (*collectedPayload)
++                .erase((*collectedPayload).begin() +
++                           ((*collectedPayload).size() - 4),
++                       (*collectedPayload).end());
++        }
++    }
++}
++
++bool extractAction(const std::string& uri, std::string& resourceUri,
++                   std::string& action)
++{
++    std::string actionString = "/Actions";
++    size_t index;
++    if ((index = uri.find(actionString)) != std::string::npos)
++    {
++        resourceUri = uri.substr(0, index);
++        size_t resourceIndex = resourceUri.rfind("/");
++        if (resourceIndex != std::string::npos)
++        {
++            action = uri.substr(index + 9, uri.length());
++        }
++        return 0;
++    }
++    return index;
++}
++
++// This is specific to Drive resource
++int createOperationLocator(std::vector<uint8_t>* operationLocator,
++                           uint8_t** schemaDict, uint16_t* finalOffset)
++{
++    int rc;
++    // Pass uri from top down and get resource name
++
++    std::vector<uint8_t> temp;
++    uint16_t rootOffset = bejDictGetPropertyHeadOffset();
++    uint16_t currentOffset;
++    const struct BejDictionaryProperty* property = new BejDictionaryProperty();
++    rc = bejDictGetPropertyByName(*schemaDict, rootOffset, "Drive", &property,
++                                  &currentOffset);
++    if (rc)
++    {
++        std::cerr << "Failed to find dictionary sequence for resource\n";
++        return rc;
++    }
++    temp.emplace_back(property->sequenceNumber);
++
++    rootOffset = property->childPointerOffset;
++    rc = bejDictGetPropertyByName(*schemaDict, rootOffset, "Actions", &property,
++                                  &currentOffset);
++    if (rc)
++    {
++        std::cerr << "Failed to find dictionary sequence for resource\n";
++        return rc;
++    }
++    temp.emplace_back(property->sequenceNumber);
++
++    rootOffset = property->childPointerOffset;
++    rc = bejDictGetPropertyByName(*schemaDict, rootOffset, "#Drive.Reset",
++                                  &property, &currentOffset);
++    if (rc)
++    {
++        std::cerr << "Failed to find dictionary sequence for resource\n";
++        return rc;
++    }
++    temp.emplace_back(property->sequenceNumber);
++    *finalOffset = currentOffset;
++
++    for (uint8_t sequenceNum : temp)
++    {
++        // Adding schema information
++        // set lsb as 0 for major schema and 1 for annotation schema
++        uint16_t byte0 = sequenceNum << 1;
++        uint8_t byte1 = static_cast<uint8_t>(byte0 >> 8);
++        uint8_t byte2 = static_cast<uint8_t>(byte0 & 0xFF);
++
++        if (byte1 != 0)
++        {
++            operationLocator->emplace_back(0x2);
++            operationLocator->emplace_back(byte1);
++            operationLocator->emplace_back(byte2);
++        }
++        else
++        {
++            operationLocator->emplace_back(0x1);
++            operationLocator->emplace_back(byte2);
++        }
++    }
++
++    int size = operationLocator->size();
++    operationLocator->insert(operationLocator->begin(), size);
++    operationLocator->insert(operationLocator->begin(), 0x1);
++
++    return 0;
++}
++
++int encodePayload(const std::string& requestPayload, const std::string& action,
++                  uint16_t offset, uint8_t** schemaDict,
++                  uint8_t** annotationDict,
++                  std::vector<uint8_t>& encodedPayload)
++{
++    if (requestPayload.empty())
++    {
++        return 0;
++    }
++
++    BejDictionaries bejDictionaries;
++    bejDictionaries.schemaDictionary = *schemaDict;
++    bejDictionaries.annotationDictionary = *annotationDict;
++    bejDictionaries.errorDictionary = nullptr;
++
++    struct RedfishPropertyParent root;
++    std::string actionNode = "#" + action;
++    if (DEBUG)
++    {
++        std::cerr << "Action: " << actionNode << "\n";
++    }
++    actionNode = "#Drive.Reset";
++    bejTreeInitSet(&root, "#Drive.Reset");
++    struct RedfishPropertyLeafEnum resetType;
++    json request = json::parse(requestPayload);
++    std::string cmd = request["ResetType"];
++    bejTreeAddEnum(&root, &resetType, "ResetType", cmd.c_str());
++
++    libbej::BejEncoderJson encoder;
++    int rc = encoder.encode(&bejDictionaries, bejMajorSchemaClass, &root,
++                            offset);
++    if (rc)
++    {
++        std::cerr << "BEJ Encoding fail in read request with rc: " << rc
++                  << std::endl;
++    }
++    encodedPayload = encoder.getOutput();
++    return 0;
++}
++
++int encodePayloadForUpdateOp(std::string redfishReqPayload,
++                             uint8_t** schemaDict, uint8_t** annotationDict,
++                             std::vector<uint8_t>& encodedPayload)
++{
++    // Nikhil : Currently this encoding is only suitable to encode the patch
++    // operation payload for rde pwm sensors (E.g. Payload {"Reading": 32.0}).
++    // This needs to be made more generic to support patch operation on
++    // different resource and their properites
++    BejDictionaries bejDictionaries;
++    bejDictionaries.schemaDictionary = *schemaDict;
++    bejDictionaries.annotationDictionary = *annotationDict;
++    bejDictionaries.errorDictionary = nullptr;
++
++    // Get rid of spaces from the string
++    redfishReqPayload.erase(
++        std::remove(redfishReqPayload.begin(), redfishReqPayload.end(), ' '),
++        redfishReqPayload.end());
++
++    // Get rid of the outer curly braces from the patch data
++    redfishReqPayload = redfishReqPayload.substr(1,
++                                                 redfishReqPayload.size() - 2);
++
++    // Get rid of '"' from the property name
++    redfishReqPayload.erase(
++        std::remove(redfishReqPayload.begin(), redfishReqPayload.end(), '"'),
++        redfishReqPayload.end());
++
++    size_t delimiterPos = redfishReqPayload.find(":");
++    if (delimiterPos == std::string::npos)
++    {
++        std::cerr << "Delimiter ':' absent in the Redfish Req Data"
++                  << std::endl;
++        return -1;
++    }
++
++    std::string propertyName = redfishReqPayload.substr(0, delimiterPos);
++    double propertyValue =
++        std::stof(redfishReqPayload.substr(delimiterPos + 1));
++
++    struct RedfishPropertyParent parent;
++    bejTreeInitSet(&parent, nullptr);
++
++    struct RedfishPropertyLeafReal child;
++    bejTreeAddReal(&parent, &child, propertyName.c_str(), propertyValue);
++
++    libbej::BejEncoderJson encoder;
++    int rc = encoder.encode(&bejDictionaries, bejMajorSchemaClass, &parent);
++    if (rc)
++    {
++        std::cerr << "Encoding failure with rc: " << rc << std::endl;
++        return rc;
++    }
++    encodedPayload = encoder.getOutput();
++    return 0;
++}
++
++int processRdeOperationInit(int fd, uint8_t eid, int instanceId,
++                            struct pldm_rde_requester_manager* manager,
++                            struct pldm_rde_requester_context* ctx,
++                            const std::vector<uint8_t>& requestMsg)
++{
++    auto start = std::chrono::system_clock::now();
++    std::time_t start_time = std::chrono::system_clock::to_time_t(start);
++    int rc;
++    ctx->context_status = CONTEXT_BUSY;
++    ctx->requester_status = PLDM_RDE_REQUESTER_WAITING_FOR_RESPONSE;
++
++    if (DEBUG)
++    {
++        std::cerr << "Sending on network for op init: "
++                  << std::to_string(manager->net_id) << "\n";
++    }
++
++    int i = 0;
++    while (i < MAX_RETRIES_MCTP_SOCK_FAILURE)
++    {
++        rc = pldm_send_at_network(eid, manager->net_id, fd, requestMsg.data(),
++                                  requestMsg.size());
++        if (rc)
++        {
++            ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++            ctx->context_status = CONTEXT_FREE;
++            std::cerr
++                << "Message failed while sending for op init on network id: "
++                << std::to_string(manager->net_id) << "with retry: " << i
++                << "\n";
++        }
++        else
++        {
++            break;
++        }
++        i++;
++        if (i == MAX_RETRIES_MCTP_SOCK_FAILURE)
++        {
++            return PLDM_RDE_REQUESTER_SEND_FAIL;
++        }
++    }
++    std::vector<uint8_t> response(sizeof(pldm_msg_hdr) +
++                                  PLDM_MAX_REQUEST_BYTES);
++    uint8_t* responseMsg = response.data();
++    size_t responseMsgSize = sizeof(pldm_msg_hdr) + PLDM_MAX_REQUEST_BYTES;
++    auto responsePtr = reinterpret_cast<struct pldm_msg*>(responseMsg);
++
++    if (DEBUG)
++    {
++        std::cerr << "Received response from network id for op init: "
++                  << std::to_string(manager->net_id) << "\n";
++    }
++    rc = pldm_recv_at_network(eid, fd, instanceId, &responseMsg,
++                              &responseMsgSize, manager->net_id);
++    if (rc)
++    {
++        // Add workaround -
++        processWorkaroundForFailures(fd, eid, instanceId, manager, ctx);
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        ctx->context_status = CONTEXT_FREE;
++        std::cerr << "Message failed while receiving on network id: "
++                  << std::to_string(manager->net_id) << "\n";
++        return PLDM_RDE_REQUESTER_RECV_FAIL;
++    }
++
++    auto end = std::chrono::system_clock::now();
++    std::time_t end_time = std::chrono::system_clock::to_time_t(end);
++    std::chrono::duration<double> elapsed_seconds = end - start;
++    if (DEBUG)
++    {
++        std::cout << "Started RDE Operation Init at: "
++                  << std::ctime(&start_time) << "\nRDE Operation Init at "
++                  << std::ctime(&end_time)
++                  << "\nTotal time: " << elapsed_seconds.count() << "s"
++                  << std::endl;
++    }
++
++    rc = pldm_rde_push_read_operation_response(
++        manager, ctx, responsePtr, responseMsgSize, &readRequestCallback);
++
++    if (rc)
++    {
++        std::cout << "Failed response msg with size in op init: "
++                  << std::to_string(responseMsgSize) << std::endl;
++        processWorkaroundForFailures(fd, eid, instanceId, manager, ctx);
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        ctx->context_status = CONTEXT_FREE;
++        std::cerr << "Error in pushing response and updating context with rc: "
++                  << rc << std::endl;
++        return rc;
++    }
++
++    struct rde_operation* operation = (struct rde_operation*)ctx->operation_ctx;
++    struct pldm_rde_varstring* resp_etag = operation->resp_etag;
++
++    char* chars = new char[resp_etag->string_length_bytes + 1];
++    memcpy(chars, resp_etag->string_data, resp_etag->string_length_bytes);
++    return PLDM_RDE_REQUESTER_SUCCESS;
++}
++
++int processRdeOperationComplete(int fd, uint8_t eid, int instanceId,
++                                struct pldm_rde_requester_manager* manager,
++                                struct pldm_rde_requester_context* ctx,
++                                const std::vector<uint8_t>& requestMsg)
++{
++    int rc;
++    ctx->context_status = CONTEXT_BUSY;
++    ctx->requester_status = PLDM_RDE_REQUESTER_WAITING_FOR_RESPONSE;
++
++    auto start = std::chrono::system_clock::now();
++    std::time_t start_time = std::chrono::system_clock::to_time_t(start);
++    if (DEBUG)
++    {
++        std::cerr << "Sending complete op on network: "
++                  << std::to_string(manager->net_id) << "\n";
++    }
++
++    int i = 0;
++    while (i < MAX_RETRIES_MCTP_SOCK_FAILURE)
++    {
++        rc = pldm_send_at_network(eid, manager->net_id, fd, requestMsg.data(),
++                                  requestMsg.size());
++
++        if (rc)
++        {
++            ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++            ctx->context_status = CONTEXT_FREE;
++            std::cerr << "Message failed while sending on op comp. network id: "
++                      << std::to_string(manager->net_id) << "with retry: " << i
++                      << "\n";
++        }
++        else
++        {
++            break;
++        }
++        i++;
++        if (i == MAX_RETRIES_MCTP_SOCK_FAILURE)
++        {
++            return PLDM_RDE_REQUESTER_SEND_FAIL;
++        }
++    }
++
++    std::vector<uint8_t> response(sizeof(pldm_msg_hdr) +
++                                  PLDM_MAX_REQUEST_BYTES);
++    uint8_t* responseMsg = response.data();
++    size_t responseMsgSize = sizeof(pldm_msg_hdr) + PLDM_MAX_REQUEST_BYTES;
++    auto responsePtr = reinterpret_cast<struct pldm_msg*>(responseMsg);
++    if (DEBUG)
++    {
++        std::cerr << "Receiving complete op on network: "
++                  << std::to_string(manager->net_id) << "\n";
++    }
++
++    rc = pldm_recv_at_network(eid, fd, instanceId, &responseMsg,
++                              &responseMsgSize, manager->net_id);
++    if (rc)
++    {
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        ctx->context_status = CONTEXT_FREE;
++        std::cerr << "Message failed while receiving on network id: "
++                  << std::to_string(manager->net_id) << "\n";
++        return PLDM_RDE_REQUESTER_RECV_FAIL;
++    }
++
++    auto end = std::chrono::system_clock::now();
++    std::time_t end_time = std::chrono::system_clock::to_time_t(end);
++    std::chrono::duration<double> elapsed_seconds = end - start;
++    if (DEBUG)
++    {
++        std::cout << "Started RDE Operation Complete at: "
++                  << std::ctime(&start_time) << "\nRDE Operation Complete at "
++                  << std::ctime(&end_time)
++                  << "\nTotal time for complete: " << elapsed_seconds.count()
++                  << "s" << std::endl;
++    }
++
++    rc = pldm_rde_push_read_operation_response(manager, ctx, responsePtr,
++                                               responseMsgSize, NULL);
++
++    if (rc)
++    {
++        std::cerr << "Error in pushing response and updating context\n";
++        return rc;
++    }
++
++    return PLDM_RDE_REQUESTER_SUCCESS;
++}
++
++int processRdeOpMultipartReceive(int fd, uint8_t eid, int instanceId,
++                                 struct pldm_rde_requester_manager* manager,
++                                 struct pldm_rde_requester_context* ctx,
++                                 const std::vector<uint8_t>& requestMsg)
++{
++    auto start = std::chrono::system_clock::now();
++    std::time_t start_time = std::chrono::system_clock::to_time_t(start);
++    int rc;
++
++    ctx->context_status = CONTEXT_BUSY;
++    ctx->requester_status = PLDM_RDE_REQUESTER_WAITING_FOR_RESPONSE;
++
++    if (DEBUG)
++    {
++        std::cerr << "Sending multipart on network: "
++                  << std::to_string(manager->net_id) << "\n";
++    }
++
++    int i = 0;
++    while (i < MAX_RETRIES_MCTP_SOCK_FAILURE)
++    {
++        rc = pldm_send_at_network(eid, manager->net_id, fd, requestMsg.data(),
++                                  requestMsg.size());
++
++        if (rc)
++        {
++            ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++            ctx->context_status = CONTEXT_FREE;
++            std::cerr << "Message sending multipart failed on network: "
++                      << std::to_string(manager->net_id) << "with retry: " << i
++                      << "\n";
++        }
++        else
++        {
++            break;
++        }
++        i++;
++        if (i == MAX_RETRIES_MCTP_SOCK_FAILURE)
++        {
++            return PLDM_RDE_REQUESTER_SEND_FAIL;
++        }
++    }
++
++    std::vector<uint8_t> response(sizeof(pldm_msg_hdr) +
++                                  PLDM_MAX_REQUEST_BYTES);
++    uint8_t* responseMsg = response.data();
++    size_t responseMsgSize = sizeof(pldm_msg_hdr) + PLDM_MAX_REQUEST_BYTES;
++    auto responsePtr = reinterpret_cast<struct pldm_msg*>(responseMsg);
++
++    if (DEBUG)
++    {
++        std::cerr << "Receiving multipart on network: "
++                  << std::to_string(manager->net_id) << "\n";
++    }
++    rc = pldm_recv_at_network(eid, fd, instanceId, &responseMsg,
++                              &responseMsgSize, manager->net_id);
++    if (rc)
++    {
++        // Add workaround
++        processWorkaroundForFailures(fd, eid, instanceId, manager, ctx);
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        ctx->context_status = CONTEXT_FREE;
++        std::cerr << "Message receiving failed on network: "
++                  << std::to_string(manager->net_id) << "\n";
++        return PLDM_RDE_REQUESTER_RECV_FAIL;
++    }
++
++    auto end = std::chrono::system_clock::now();
++    std::time_t end_time = std::chrono::system_clock::to_time_t(end);
++    std::chrono::duration<double> elapsed_seconds = end - start;
++    if (DEBUG)
++    {
++        std::cout << "Started RDE Operation Init at: "
++                  << std::ctime(&start_time) << "\nRDE Operation Init at "
++                  << std::ctime(&end_time)
++                  << "\nTotal time: " << elapsed_seconds.count() << "s"
++                  << std::endl;
++    }
++
++    rc = pldm_rde_push_read_operation_response(
++        manager, ctx, responsePtr, responseMsgSize, &readRequestCallback);
++
++    if (rc)
++    {
++        std::cout << "Failed response msg with size in multipart: "
++                  << std::to_string(responseMsgSize) << std::endl;
++        processWorkaroundForFailures(fd, eid, instanceId, manager, ctx);
++        ctx->requester_status = PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        ctx->context_status = CONTEXT_FREE;
++        std::cerr << "Error in pushing response and updating context with rc: "
++                  << rc << std::endl;
++        return rc;
++    }
++    return 0;
++}
++
++int processNextRdeOperation(int fd, uint8_t eid, int instanceId,
++                            struct pldm_rde_requester_manager* manager,
++                            struct pldm_rde_requester_context* ctx,
++                            const std::vector<uint8_t>& requestMsg)
++{
++    switch (ctx->next_command)
++    {
++        case PLDM_RDE_OPERATION_INIT:
++            return processRdeOperationInit(fd, eid, instanceId, manager, ctx,
++                                           requestMsg);
++
++        case PLDM_RDE_OPERATION_COMPLETE:
++            return processRdeOperationComplete(fd, eid, instanceId, manager,
++                                               ctx, requestMsg);
++        case PLDM_RDE_MULTIPART_RECEIVE:
++            return processRdeOpMultipartReceive(fd, eid, instanceId, manager,
++                                                ctx, requestMsg);
++
++        default:
++            return PLDM_RDE_REQUESTER_NOT_PLDM_RDE_MSG;
++    }
++    return 0;
++}
++
++int executeRdeOperation(int fd, int eid, int instanceId, std::string uri,
++                        std::string udevid, uint16_t operationId,
++                        uint8_t operationType, uint8_t requestId,
++                        struct pldm_rde_requester_manager* manager,
++                        struct pldm_rde_requester_context* ctx,
++                        uint32_t resourceId, const std::string& reqJsonPayload)
++{
++    union pldm_rde_operation_flags op_flags;
++    op_flags.byte = 0;
++    std::vector<uint8_t> operationLocator;
++
++    std::vector<uint8_t> encodedPayload;
++    int payloadLength;
++    int operation_locator_length;
++    int rc;
++
++    // Enocde request payload for operations of type ACTION, CREATE and UPDATE
++    if (operationType == PLDM_RDE_OPERATION_ACTION)
++    {
++        op_flags.bits.contains_request_payload = 1;
++        op_flags.bits.locator_valid = 1;
++
++        std::string resource;
++        std::string action;
++        rc = extractAction(uri, resource, action);
++        if (rc)
++        {
++            std::cerr << "No action URI found" << uri << std::endl;
++            return rc;
++        }
++
++        // Get RID for dictionary
++        uint32_t ridSchema = resourceId >> 16 << 16;
++        uint32_t schemaDictLen;
++        uint8_t* schemaDict;
++        rc = getDictionaryForRidDev(udevid, ridSchema, &schemaDict,
++                                    &schemaDictLen);
++        if (rc)
++        {
++            std::cerr << "Unable to get dictionary for resource";
++            return rc;
++        }
++
++        uint32_t annotationDictLen;
++        uint8_t* annotationDict;
++        rc = getDictionaryForRidDev(udevid, 0xffffffff, &annotationDict,
++                                    &annotationDictLen);
++        if (rc)
++        {
++            std::cerr << "Unable to get annotation dictionary for resource";
++            return rc;
++        }
++
++        // libbej::BejEncoderJson encoder;
++        uint16_t offset;
++        rc = createOperationLocator(&operationLocator, &schemaDict, &offset);
++
++        rc = encodePayload(reqJsonPayload, action, offset, &schemaDict,
++                           &annotationDict, encodedPayload);
++    }
++    else if (operationType == PLDM_RDE_OPERATION_UPDATE)
++    {
++        op_flags.bits.contains_request_payload = 1;
++
++        int rc;
++        uint32_t annotationDictLen;
++        uint8_t* annotationDict;
++
++        // get_dictioanry_for_rid from particular resource id
++        rc = getDictionaryForRidDev(udevid, 0xffffffff, &annotationDict,
++                                    &annotationDictLen);
++        if (rc)
++        {
++            std::cerr << "Unable to fetch annotation dictionary\n";
++            return rc;
++        }
++        uint32_t ridSchema = resourceId >> 16 << 16;
++        uint32_t schemaDictLen;
++        uint8_t* schemaDict;
++        rc = getDictionaryForRidDev(udevid, ridSchema, &schemaDict,
++                                    &schemaDictLen);
++        if (rc)
++        {
++            std::cerr << "Unable to fetch schema dictionary\n";
++            return rc;
++        }
++
++        rc = encodePayloadForUpdateOp(reqJsonPayload, &schemaDict,
++                                      &annotationDict, encodedPayload);
++        if (rc)
++        {
++            std::cerr << "Failed to bej encode payload for Rde Update operation"
++                      << std::endl;
++            return rc;
++        }
++    }
++
++    rc = pldm_rde_init_rde_operation_context(
++        ctx, requestId, resourceId, operationId, operationType, op_flags.byte,
++        /*send_transfer_handle*/ (uint32_t)0,
++        /*operation_loc_length*/ operationLocator.size(),
++        /*payloadLength*/ encodedPayload.size(),
++        /*operation_locator_ptr*/ operationLocator.data(),
++        /*requestPayload*/ encodedPayload.data());
++
++    payloadLength = encodedPayload.size();
++    operation_locator_length = operationLocator.size();
++    if (rc)
++    {
++        std::cerr << "RDE Read operation init context failed\n";
++        return rc;
++    }
++    int processCounter = 0;
++    while (true)
++    {
++        if (ctx->requester_status == PLDM_RDE_REQUESTER_REQUEST_FAILED)
++        {
++            return PLDM_RDE_REQUESTER_REQUEST_FAILED;
++        }
++        if (ctx->requester_status == PLDM_RDE_REQUESTER_NO_PENDING_ACTION)
++        {
++            break;
++        }
++        int requestBytes;
++
++        if (rdeOpCommandRequestSize.find(ctx->next_command) !=
++            rdeOpCommandRequestSize.end())
++        {
++            requestBytes = rdeOpCommandRequestSize[ctx->next_command];
++        }
++        else
++        {
++            requestBytes = PLDM_MAX_REQUEST_BYTES;
++        }
++
++        // If operation init request add payload
++        // length to the request bytes
++        if (ctx->next_command == PLDM_RDE_OPERATION_INIT)
++        {
++            requestBytes = requestBytes + payloadLength +
++                           operation_locator_length;
++        }
++
++        std::vector<uint8_t> requestMsg(sizeof(pldm_msg_hdr) + requestBytes);
++        auto request = reinterpret_cast<pldm_msg*>(requestMsg.data());
++        if (DEBUG)
++        {
++            std::cerr << "Getting next read operation...\n";
++        }
++
++        int rc = pldm_rde_get_next_rde_operation(instanceId, manager, ctx,
++                                                 request);
++        if (rc)
++        {
++            if (DEBUG)
++            {
++                std::cout << "No next operation found\n";
++            }
++            break;
++        }
++
++        rc = processNextRdeOperation(fd, eid, instanceId, manager, ctx,
++                                     requestMsg);
++
++        if (rc)
++        {
++            if (DEBUG)
++            {
++                std::cout << "Not a valid request\n";
++            }
++            return rc;
++        }
++        if (processCounter > MAX_LOOP_ITERATION_STATE_MACHINE)
++        {
++            return -1;
++        }
++        processCounter++;
++    }
++
++    return 0;
++}
+diff --git a/rded/helper/rde_operation/rde_operation.hpp b/rded/helper/rde_operation/rde_operation.hpp
+new file mode 100644
+index 0000000..e610f0a
+--- /dev/null
++++ b/rded/helper/rde_operation/rde_operation.hpp
+@@ -0,0 +1,27 @@
++#include "libpldm/requester/pldm_base_requester.h"
++#include "libpldm/requester/pldm_rde_requester.h"
++
++#include "helper/common.hpp"
++
++#include <iostream>
++#include <map>
++#include <vector>
++
++extern std::map<uint8_t, int> rdeOpCommandRequestSize;
++
++int processNextRdeOperation(int fd, uint8_t eid, int instanceId,
++                               struct pldm_rde_requester_manager* manager,
++                               struct pldm_rde_requester_context* ctx,
++                               const std::vector<uint8_t>& requestMsg);
++
++int executeRdeOperation(int fd, int eid, int instanceId, std::string uri,
++                          std::string udevid, uint16_t operationId,
++                          uint8_t operationType, uint8_t request_id,
++                          struct pldm_rde_requester_manager* manager,
++                          struct pldm_rde_requester_context* ctx,
++                          uint32_t resourceId, const std::string& jsonPayload);
++
++int getResponseForRequestId(uint8_t requestId, uint8_t** payload,
++                                uint32_t* length);
++
++int cleanupRequestId(uint8_t requestId, struct pldm_rde_requester_context *ctx);
+diff --git a/rded/helper/resource_id_mapper.hpp b/rded/helper/resource_id_mapper.hpp
+new file mode 100644
+index 0000000..9be6588
+--- /dev/null
++++ b/rded/helper/resource_id_mapper.hpp
+@@ -0,0 +1,305 @@
++/**
++ *
++ * This file has a hardcoded resource id mapper for mackback machines
++ * This would not be used once the PDR is implemented
++ *
++ */
++#include <iostream>
++#include <unordered_map>
++#include <string>
++#include <string_view>
++
++std::unordered_map<std::string_view, uint32_t> resourceIdMap;
++int createResourceIdMapping()
++{
++    resourceIdMap.emplace("/redfish/v1/Chassis", 0x00000000);
++    resourceIdMap.emplace("/redfish/v1/Chassis/Tray", 0x00010000);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_0", 0x00010001);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_1", 0x00010002);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_2", 0x00010003);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_3", 0x00010004);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_4", 0x00010005);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_5", 0x00010006);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_6", 0x00010007);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_7", 0x00010008);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_8", 0x00010009);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_9", 0x0001000a);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_10", 0x0001000b);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_11", 0x0001000c);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_12", 0x0001000d);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_13", 0x0001000e);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_14", 0x0001000f);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_15", 0x00010010);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_16", 0x00010011);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_17", 0x00010012);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_18", 0x00010013);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_19", 0x00010014);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_20", 0x00010015);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_21", 0x00010016);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_22", 0x00010017);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_23", 0x00010018);
++    resourceIdMap.emplace("/redfish/v1/Chassis/Tray/Sensors", 0x00020000);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_0/Sensors", 0x00020001);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_1/Sensors", 0x00020002);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_2/Sensors", 0x00020003);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_3/Sensors", 0x00020004);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_4/Sensors", 0x00020005);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_5/Sensors", 0x00020006);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_6/Sensors", 0x00020007);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_7/Sensors", 0x00020008);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_8/Sensors", 0x00020009);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_9/Sensors", 0x0002000a);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_10/Sensors", 0x0002000b);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_11/Sensors", 0x0002000c);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_12/Sensors", 0x0002000d);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_13/Sensors", 0x0002000e);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_14/Sensors", 0x0002000f);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_15/Sensors", 0x00020010);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_16/Sensors", 0x00020011);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_17/Sensors", 0x00020012);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_18/Sensors", 0x00020013);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_19/Sensors", 0x00020014);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_20/Sensors", 0x00020015);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_21/Sensors", 0x00020016);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_22/Sensors", 0x00020017);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_23/Sensors", 0x00020018);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/vol_p12v_scaled", 0x00030000);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/vol_p5v1_scaled", 0x00030001);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/vol_p5v2_scaled", 0x00030002);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/vol_p3v3_aux_scaled", 0x00030003);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/vol_p1v8_scaled", 0x00030004);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/vol_p0v86_scaled", 0x00030005);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/vol_p1v45_scaled", 0x00030006);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/temp_i2tang", 0x00030007);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/hsc_temp", 0x00030008);
++    resourceIdMap.emplace("/redfish/v1/Chassis/Tray/Sensors/hsc_vin", 0x00030009);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/hsc_vout", 0x0003000a);
++    resourceIdMap.emplace("/redfish/v1/Chassis/Tray/Sensors/hsc_pin", 0x0003000b);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/hsc_iout", 0x0003000c);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/hsc_peak_iout", 0x0003000d);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/hsc_peak_vin", 0x0003000e);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/hsc_peak_temp", 0x0003000f);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/hsc_peak_pin", 0x00030010);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/brick_p12v_temp", 0x00030011);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/brick_p12v_vin", 0x00030012);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/brick_p12v_vout", 0x00030013);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/brick_p12v_iout", 0x00030014);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/brick_p12v_pout", 0x00030015);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/p5v_1_vin", 0x00030016);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/p5v_1_vout", 0x00030017);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/p5v_1_iout", 0x00030018);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/p5v_1_temp", 0x00030019);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/p5v_2_vin", 0x0003001a);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/p5v_2_vout", 0x0003001b);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/p5v_2_iout", 0x0003001c);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/p5v_2_temp", 0x0003001d);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/p0v86_vin", 0x0003001e);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/p0v86_vout", 0x0003001f);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/p0v86_iout", 0x00030020);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/p0v86_temp", 0x00030021);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/fan0_tach", 0x00030022);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/fan1_tach", 0x00030023);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/fan0_duty", 0x00030024);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/fan1_duty", 0x00030025);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/ioc_temp", 0x00030026);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_0/Sensors/Drive_0t", 0x00030027);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_1/Sensors/Drive_0t", 0x00030028);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_2/Sensors/Drive_0t", 0x00030029);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_3/Sensors/Drive_0t", 0x0003002a);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_4/Sensors/Drive_0t", 0x0003002b);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_5/Sensors/Drive_0t", 0x0003002c);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_6/Sensors/Drive_0t", 0x0003002d);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_7/Sensors/Drive_0t", 0x0003002e);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_8/Sensors/Drive_0t", 0x0003002f);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_9/Sensors/Drive_0t", 0x00030030);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_10/Sensors/Drive_0t", 0x00030031);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_11/Sensors/Drive_0t", 0x00030032);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_12/Sensors/Drive_0t", 0x00030033);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_13/Sensors/Drive_0t", 0x00030034);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_14/Sensors/Drive_0t", 0x00030035);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_15/Sensors/Drive_0t", 0x00030036);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_16/Sensors/Drive_0t", 0x00030037);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_17/Sensors/Drive_0t", 0x00030038);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_18/Sensors/Drive_0t", 0x00030039);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_19/Sensors/Drive_0t", 0x0003003a);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_20/Sensors/Drive_0t", 0x0003003b);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_21/Sensors/Drive_0t", 0x0003003c);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_22/Sensors/Drive_0t", 0x0003003d);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_23/Sensors/Drive_0t", 0x0003003e);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/host_fan0_pwm", 0x0003003f);
++    resourceIdMap.emplace("/redfish/v1/Managers", 0x00040000);
++    resourceIdMap.emplace("/redfish/v1/Managers/mbmc", 0x00050000);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_0/Drives", 0x00060001);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_1/Drives", 0x00060002);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_2/Drives", 0x00060003);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_3/Drives", 0x00060004);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_4/Drives", 0x00060005);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_5/Drives", 0x00060006);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_6/Drives", 0x00060007);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_7/Drives", 0x00060008);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_8/Drives", 0x00060009);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_9/Drives", 0x0006000a);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_10/Drives", 0x0006000b);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_11/Drives", 0x0006000c);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_12/Drives", 0x0006000d);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_13/Drives", 0x0006000e);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_14/Drives", 0x0006000f);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_15/Drives", 0x00060010);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_16/Drives", 0x00060011);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_17/Drives", 0x00060012);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_18/Drives", 0x00060013);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_19/Drives", 0x00060014);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_20/Drives", 0x00060015);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_21/Drives", 0x00060016);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_22/Drives", 0x00060017);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_23/Drives", 0x00060018);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_0/Drives/SATA_0", 0x00070000);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_1/Drives/SATA_1", 0x00070001);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_2/Drives/SATA_2", 0x00070002);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_3/Drives/SATA_3", 0x00070003);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_4/Drives/SATA_4", 0x00070004);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_5/Drives/SATA_5", 0x00070005);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_6/Drives/SATA_6", 0x00070006);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_7/Drives/SATA_7", 0x00070007);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_8/Drives/SATA_8", 0x00070008);
++    resourceIdMap.emplace("/redfish/v1/Chassis/SATA_9/Drives/SATA_9", 0x00070009);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_10/Drives/SATA_10", 0x0007000a);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_11/Drives/SATA_11", 0x0007000b);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_12/Drives/SATA_12", 0x0007000c);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_13/Drives/SATA_13", 0x0007000d);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_14/Drives/SATA_14", 0x0007000e);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_15/Drives/SATA_15", 0x0007000f);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_16/Drives/SATA_16", 0x00070010);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_17/Drives/SATA_17", 0x00070011);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_18/Drives/SATA_18", 0x00070012);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_19/Drives/SATA_19", 0x00070013);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_20/Drives/SATA_20", 0x00070014);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_21/Drives/SATA_21", 0x00070015);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_22/Drives/SATA_22", 0x00070016);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/SATA_23/Drives/SATA_23", 0x00070017);
++    resourceIdMap.emplace("/redfish/v1/UpdateService", 0x00080000);
++    resourceIdMap.emplace(
++        "/redfish/v1/UpdateService/FirmwareInventory", 0x000a0000);
++    resourceIdMap.emplace(
++        "/redfish/v1/UpdateService/FirmwareInventory/mbmc", 0x00090000);
++    resourceIdMap.emplace("/redfish/v1/Chassis/Tray/Controls", 0x000c0000);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Controls/HDD_pid", 0x000b0000);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/p12v_cem_imon", 0x00030040);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/p12v_cem", 0x00030041);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/mb_pwr_status", 0x00030042);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/fan0_imon", 0x00030043);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Sensors/fan1_imon", 0x00030044);
++    resourceIdMap.emplace(
++        "/redfish/v1/Chassis/Tray/Controls/fans", 0x000b0001);
++    resourceIdMap.emplace("/redfish/v1/Storage", 0x000d0000);
++    resourceIdMap.emplace("/redfish/v1/Storage/SATA", 0x000e0000);
++    resourceIdMap.emplace("/redfish/v1/Storage/SATA/Controllers", 0x000f0000);
++    resourceIdMap.emplace("/redfish/v1/Storage/SATA/Controllers/ioc",
++                          0x00100000);
++    // Whenever making a new entry make sure to check the resourceIds vector in
++    // rde_discovery.cpp to see if the parent dictionary is present or not
++    return 0;
++}
++
++int getResourceIdForUri(std::string_view uri, uint32_t& resourceId)
++{
++    auto it = resourceIdMap.find(uri);
++    if (it != resourceIdMap.end())
++    {
++        resourceId = it->second;
++        if (DEBUG)
++        {
++            std::cout << "Resource id found: " << std::to_string(it->second)
++                      << "\n";
++        }
++        return 0;
++    }
++    if ((uri.find("Cables") == std::string::npos) &&
++        (uri.find("Systems") == std::string::npos))
++    {
++        std::cerr << "Resource id not found for uri: " << uri << std::endl;
++    }
++    return 1;
++}
+diff --git a/rded/meson.build b/rded/meson.build
+index f4bbeec..16c90d8 100644
+--- a/rded/meson.build
++++ b/rded/meson.build
+@@ -2,6 +2,7 @@ sources = [
+   'rded.cpp',
+   'helper/discovery/base_discovery.cpp',
+   'helper/discovery/rde_discovery.cpp',
++  'helper/rde_operation/rde_operation.cpp',
+ ]
+ 
+ args = [
+diff --git a/rded/rded.cpp b/rded/rded.cpp
+index 5d8c24f..8f9c2c5 100644
+--- a/rded/rded.cpp
++++ b/rded/rded.cpp
+@@ -2,6 +2,14 @@
+ #include "helper/common.hpp"
+ #include "helper/discovery/base_discovery.hpp"
+ #include "helper/discovery/rde_discovery.hpp"
++#include "helper/rde_operation/rde_operation.hpp"
++#include "helper/resource_id_mapper.hpp"
++
++// libbej
++#include "libbej/bej_common.h"
++#include "libbej/bej_encoder_core.h"
++
++#include "libbej/bej_encoder_json.hpp"
+ 
+ #include <locale.h>
+ #include <signal.h>
+@@ -12,6 +20,7 @@
+ #include <boost/asio.hpp>
+ #include <boost/asio/io_context.hpp>
+ #include <helper/mctpsetup.hpp>
++#include <libbej/bej_decoder_json.hpp>
+ #include <sdbusplus/asio/connection.hpp>
+ #include <sdbusplus/asio/object_server.hpp>
+ #include <sdbusplus/asio/property.hpp>
+@@ -22,7 +31,7 @@
+ 
+ #include <cstddef>
+ #include <iostream>
+-#include <map>
++#include <unordered_map>
+ #include <vector>
+ 
+ using namespace sdeventplus;
+@@ -32,20 +41,27 @@ using DbusVariant = std::variant<std::string, uint64_t, uint32_t, uint16_t,
+                                  uint8_t, sdbusplus::message::object_path>;
+ using ChangedPropertiesType = std::vector<std::pair<std::string, DbusVariant>>;
+ 
+-constexpr bool DEBUG_ENABLED = false;
+ constexpr uint8_t DEST_EID = 9;
+ // TODO(@harshtya): Change instance id to be dynamic
+ constexpr uint8_t INSTANCE_ID = 1;
+ 
++constexpr int SOCKET_TIMEOUT_SECONDS = 8;
++
++constexpr uint32_t annotationDictRid = 0xffffffff;
++
+ int fd; // MCTP Socket for RDE communication
+ 
+-std::map<std::string, int> deviceNetIdMap;
+-std::map<std::string, std::shared_ptr<sdbusplus::asio::dbus_interface>>
++boost::asio::io_context io;
++std::unordered_map<int, int> retryCounterMap;
++
++std::unordered_map<std::string, int> deviceNetIdMap;
++std::unordered_map<std::string,
++                   std::shared_ptr<sdbusplus::asio::dbus_interface>>
+     dbusIntfMap;
+ std::unordered_map<std::string, std::string> objectPathDeviceId;
+ 
+-int initiateDiscovery(int fd, std::string udevId, int netId,
+-                       uint8_t destEid, uint8_t instanceId)
++int initiateDiscovery(int fd, std::string udevId, int netId, uint8_t destEid,
++                      uint8_t instanceId)
+ {
+     int rc;
+ 
+@@ -90,6 +106,358 @@ void getDeviceIdForRemovedDevice(const std::string& objPath,
+     }
+ }
+ 
++/**
++ * @brief generate operation id
++ */
++uint16_t generateOperationId()
++{
++    // TODO(@harshtya): Create an operation id generator (Following the spec)
++    return 32770;
++}
++
++/**
++ * @brief Retry counter tracker
++ */
++int getCurrentRetryCount(int requestId)
++{
++    auto it = retryCounterMap.find(requestId);
++    if (it == retryCounterMap.end())
++    {
++        retryCounterMap.insert({requestId, 1});
++        return 1;
++    }
++
++    int retryCount = it->second;
++    retryCounterMap.insert({requestId, retryCount + 1});
++    return retryCount + 1;
++}
++
++/**
++ * @brief Removes the query parameters as we do not support expand yet
++ */
++int removeQueryParams(std::string& uri, std::string_view delimeter)
++{
++    std::string::size_type start = uri.find(delimeter);
++    int end = uri.length();
++    if (start == std::string::npos)
++    {
++        if (DEBUG)
++        {
++            std::cerr << "No query parameters found\n";
++        }
++        return 1;
++    }
++    uri.erase(start, end - start + 1);
++    return 0;
++}
++
++/**
++ * @brief Remove any trailing forward slashes in URI
++ */
++void truncateTrailingFwSlash(std::string& uri)
++{
++    if (uri.back() == '/')
++    {
++        uri.pop_back();
++    }
++}
++
++/**
++ * @brief Checks whether the POST request is an UPDATE request or ACTION
++ */
++bool isActionOperation(const std::string& uri, std::string& resourceUri)
++{
++    std::string actionString = "/Actions";
++    size_t index;
++    if ((index = uri.find(actionString)) != std::string::npos)
++    {
++        resourceUri = uri.substr(0, index);
++        return true;
++    }
++    return false;
++}
++
++/**
++ * Translate BEJ to string
++ */
++int translateBejToString(uint32_t resourceId, const std::string& deviceId,
++                         std::string* json, uint8_t** payload,
++                         uint32_t payloadLength)
++{
++    int rc;
++    uint32_t annotationDictLen = 0;
++    uint8_t* annotationDict = nullptr;
++
++    // get_dictioanry_for_rid from particular resource id
++    rc = getDictionaryForRidDev(deviceId, annotationDictRid, &annotationDict,
++                                &annotationDictLen);
++    if (rc)
++    {
++        std::cerr << "Unable to fetch annotation dictionary\n";
++        return rc;
++    }
++    uint32_t ridSchema = resourceId >> 16 << 16;
++    uint32_t schemaDictLen = 0;
++    uint8_t* schemaDict = nullptr;
++    rc = getDictionaryForRidDev(deviceId, ridSchema, &schemaDict,
++                                &schemaDictLen);
++    if (rc)
++    {
++        std::cerr << "Unable to fetch schema dictionary\n";
++        return rc;
++    }
++
++    std::span<uint8_t> bejson = std::span{*payload, payloadLength};
++    BejDictionaries bejDictionaries;
++    bejDictionaries.schemaDictionary = schemaDict;
++    bejDictionaries.annotationDictionary = annotationDict;
++    bejDictionaries.errorDictionary = nullptr;
++
++    if (payloadLength > 0)
++    {
++        libbej::BejDecoderJson decoder;
++        decoder.decode(bejDictionaries, bejson);
++        *json = decoder.getOutput();
++    }
++    else
++    {
++        *json = "{\"Status\": \"Completed\"}";
++    }
++    return 0;
++}
++
++/**
++ * @brief RDE Operation DBus method handler
++ */
++std::string
++    rdeOperation(boost::asio::yield_context yield, int requestId,
++                 uint8_t operationType /* Change to std::string req_type */,
++                 std::string uri, std::string udevid,
++                 std::string reqPayloadJson)
++{
++    struct pldm_rde_requester_context baseContext;
++    int rc = getRdeFreeContextForRdeDevice(udevid, &baseContext);
++    if (rc == RDE_NO_CONTEXT_FOUND)
++    {
++        std::cerr << "Unable to provide base context- Error in RDE discovery\n";
++        return "Unsuccessful RDE operation with error code: " +
++               std::to_string(rc);
++    }
++
++    // if base context is free to execute
++    if (baseContext.context_status == CONTEXT_BUSY ||
++        baseContext.context_status == CONTEXT_CONTINUE)
++    {
++        auto timer = std::make_shared<boost::asio::steady_timer>(io);
++        timer->expires_from_now(std::chrono::milliseconds(20));
++        timer->async_wait(yield);
++        std::cerr << "Timer expired. RDE Operation failed\n";
++
++        int currentRetry = getCurrentRetryCount(requestId);
++        if (currentRetry > MAX_RETRIES_FOR_REQUEST)
++        {
++            retryCounterMap.erase(requestId);
++            return "Max retries exceeded for request. Abandoning...\n";
++        }
++        rdeOperation(yield, requestId, operationType, uri, udevid,
++                     reqPayloadJson);
++    }
++
++    // get manager
++    struct pldm_rde_requester_manager* manager;
++    rc = getManagerForRdeDevice(udevid, &manager);
++    if (rc)
++    {
++        std::cerr
++            << "Failed to get manager to perform read request for request id: "
++            << std::to_string(requestId) << ", request uri: " << uri
++            << ", UDEVID: " << udevid << "\n";
++        return "Unsuccessful RDE operation with error code: " +
++               std::to_string(rc);
++    }
++    uint32_t resourceId = 0;
++
++    std::string rawUri = uri;
++    // strip query params - until expand is supported
++    rc = removeQueryParams(uri, "?");
++    if (DEBUG && !rc)
++    {
++        std::cerr << "URI after removing query params: " << uri << "\n";
++    }
++    truncateTrailingFwSlash(uri);
++
++    rc = getResourceIdForUri(uri, resourceId);
++    if (rc)
++    {
++        // TODO(@harshtya) - Define operation Types to be GET or POST
++        if (int(operationType) !=
++            8) /* check the req_type (8 is a random num denoting POST op)*/
++        {
++            if ((uri.find("Cables") == std::string::npos) &&
++                (uri.find("Systems") == std::string::npos))
++            {
++                std::cerr
++                    << "Unsuccessful RDE operation- no resource id found, rc: " +
++                           std::to_string(rc) + " with URI: " + rawUri + "\n";
++            }
++
++            return "Unsuccessful RDE operation with error code: " +
++                   std::to_string(rc) + " with URI: " + rawUri + "\n";
++            ;
++        }
++
++        std::string resource_uri;
++        std::string resource_name;
++        std::string action;
++
++        if (isActionOperation(uri, resource_uri))
++        {
++            rc = getResourceIdForUri(resource_uri, resourceId);
++            if (rc)
++            {
++                std::cerr
++                    << "Unable to resolve collection for RDE Action request "
++                    << "with rawUri: " << rawUri << "\n";
++                return "Unable to resolve collection for RDE Action request"
++                       " with rc: " +
++                       std::to_string(rc) + "\n";
++            }
++            // TODO(@harshtya): Define 6 in PLDM_RDE_OPERATION_TYPES in libpldm
++            operationType = 6; // This is the operation type for ACTION request
++        }
++        else
++        {
++            // Create a resource request
++            std::cerr << "Operation create not supported: " << rawUri << "\n";
++            return "Create RDE operation not yet supported for " + rawUri +
++                   "\n";
++        }
++    }
++
++    uint16_t operation_id = generateOperationId();
++
++    for (int retry = 0; retry < MAX_RETRIES_MCTP_SOCK_FAILURE; retry++)
++    {
++        rc = executeRdeOperation(
++            fd, DEST_EID, INSTANCE_ID, uri, udevid, operation_id, operationType,
++            requestId, manager, &baseContext, resourceId, reqPayloadJson);
++        if (rc)
++        {
++            std::cerr << "Request execution failed: ReqID: "
++                      << std::to_string(requestId) << ", URI: " << uri << ", "
++                      << "operation type: " << std::to_string(operationType)
++                      << " with retry counter: " << (retry + 1) << std::endl;
++            retryCounterMap.erase(requestId);
++            cleanupRequestId(requestId, &baseContext);
++        }
++        else
++        {
++            break;
++        }
++
++        if (retry == 4)
++        {
++            return "Unsuccessful RDE operation with error code: " +
++                   std::to_string(rc);
++        }
++    }
++
++    uint8_t* payload;
++    uint32_t payloadLength;
++    rc = getResponseForRequestId(requestId, &payload, &payloadLength);
++    if (rc)
++    {
++        std::cerr << "Unable to fetch response from response map with rc: "
++                  << rc << " for URI: " << rawUri;
++        retryCounterMap.erase(requestId);
++        cleanupRequestId(requestId, &baseContext);
++        return "Unsuccessful RDE operation with error code: " +
++               std::to_string(rc);
++    }
++
++    std::string jsonResp;
++    rc = translateBejToString(resourceId, udevid, &jsonResp, &payload,
++                              payloadLength);
++    if (rc)
++    {
++        std::cerr << "Unable to translate BEJ for URI: " << rawUri << "\n";
++        jsonResp = "Unsuccessful RDE operation- failed to translate bej";
++        cleanupRequestId(requestId, &baseContext);
++        retryCounterMap.erase(requestId);
++    }
++    cleanupRequestId(requestId, &baseContext);
++    retryCounterMap.erase(requestId);
++    return jsonResp;
++}
++
++void pldmSetup(int& fd, sdbusplus::asio::object_server& objectServer,
++               std::string changedObject, std::string& port,
++               std::string& udevid, std::string& vendorId,
++               std::string& prefixPath)
++{
++    int netId = setupOnePort(port, udevid); // MCTP Setup
++    if (netId == -1)
++    {
++        std::cerr << "Mctp failed udevId: " << udevid << ", " << port << "\n";
++        return;
++    }
++    deviceNetIdMap.insert({udevid, netId});
++    int rc = 0;
++    for (int retryCounter = 0; retryCounter < MAX_RETRIES_MCTP_SOCK_FAILURE;
++         retryCounter++)
++    {
++        rc = initiateDiscovery(fd, udevid, netId, DEST_EID, INSTANCE_ID);
++
++        if (rc)
++        {
++            std::cerr << "PLDM/RDE Discovery failed for device: " << port
++                      << ", udev: " << udevid
++                      << "with retry counter:" << (retryCounter + 1)
++                      << std::endl;
++            cleanupDictionaries(udevid);
++        }
++        else
++        {
++            break;
++        }
++        if (retryCounter == 4)
++        {
++            std::cerr << "All retries exhausted for discovery for "
++                      << " udev: " << udevid << std::endl;
++            return;
++        }
++        std::cerr << "Retrying discovery again due to failure" << std::endl;
++    }
++
++    if (rc)
++    {
++        std::cerr << "PLDM/RDE Discovery failed for device: " << port
++                  << ", udev: " << udevid << "after all retries" << std::endl;
++        return;
++    }
++
++    std::string objectPath = prefixPath + udevid;
++    if (DEBUG)
++    {
++        std::cerr << "New object path created: " << objectPath << "\n";
++    }
++
++    std::shared_ptr<sdbusplus::asio::dbus_interface> iface =
++        objectServer.add_interface(objectPath, "xyz.openbmc_project.RdeDevice");
++    iface->register_property("VID", vendorId,
++                             sdbusplus::asio::PropertyPermission::readOnly);
++    iface->register_property("USBPORT", port,
++                             sdbusplus::asio::PropertyPermission::readOnly);
++    iface->register_property("UDEVID", udevid,
++                             sdbusplus::asio::PropertyPermission::readOnly);
++
++    iface->register_method("execute_rde", std::move(rdeOperation));
++
++    iface->initialize();
++    dbusIntfMap.insert({std::string(changedObject), iface});
++    objectPathDeviceId.insert({std::string(changedObject), udevid});
++}
++
+ int triggerRdeReactor(int fd)
+ {
+     /**
+@@ -108,8 +476,82 @@ int triggerRdeReactor(int fd)
+ 
+     std::cerr << "Beginning RDE reactor...\n";
+ 
+-    // TODO(@kkachana,@harshtya): Add the enumeration code for already existing
+-    // RDE devices in the Entity Manager service tree
++    // Find the all the object paths that implement interface
++    // xyz.openbmc_project.Configuration.RdeSatelliteController
++    // Then, create rde_device dbus object
++    using propertyMap =
++        std::vector<std::pair<std::string, std::vector<std::string>>>;
++    constexpr std::array<std::string_view, 1> interfaces = {
++        "xyz.openbmc_project.Configuration.RdeSatelliteController"};
++    using DBusProperties = std::vector<std::pair<std::string, DbusVariant>>;
++
++    systemBus->async_method_call_timed(
++        [&fd, &systemBus, &objectServer, &prefixPath](
++            const boost::system::error_code& ec,
++            const std::vector<std::pair<std::string, propertyMap>>& subtree) {
++        if (ec)
++        {
++            std::cerr << "D-Bus error: " << ec << ", " << ec.message() << " \n";
++            return;
++        }
++        if (subtree.empty())
++        {
++            std::cerr << "No instances found \n";
++            return;
++        }
++        for (const auto& [objPath, services] : subtree)
++        {
++            for (const auto& service : services)
++            {
++                systemBus->async_method_call_timed(
++                    [&fd, &objectServer, &prefixPath,
++                     objPath](const boost::system::error_code& ec2,
++                              const DBusProperties& properties) {
++                    if (ec2)
++                    {
++                        std::cerr << "DBUS response error on GetAll: "
++                                  << ec2.message() << " \n";
++                        return;
++                    }
++                    std::string vendorId;
++                    std::string udevid;
++                    std::string port;
++                    const bool success = sdbusplus::unpackPropertiesNoThrow(
++                        [](const sdbusplus::UnpackErrorReason reason,
++                           const std::string& property) {
++                        std::cerr << " Error unpacking the property "
++                                  << property << " reason "
++                                  << static_cast<int>(reason) << " \n";
++                    },
++                        properties, "VID", vendorId, "USBPORT", port, "UDEVID",
++                        udevid);
++                    if (success)
++                    {
++                        if (vendorId.empty() || port.empty() || udevid.empty())
++                        {
++                            std::cerr
++                                << "Matcher does not have required properties\n";
++                            return;
++                        }
++                        // Do PLDM Setup
++                        pldmSetup(fd, objectServer, std::string(objPath), port,
++                                  udevid, vendorId, prefixPath);
++                    }
++                    else
++                    {
++                        std::cerr << "error in parsing properties \n";
++                    }
++                },
++                    service.first, objPath, "org.freedesktop.DBus.Properties",
++                    "GetAll", /*timeout in usec*/ 90000000,
++                    "xyz.openbmc_project.Configuration.RdeSatelliteController");
++            }
++        }
++    },
++        "xyz.openbmc_project.ObjectMapper",
++        "/xyz/openbmc_project/object_mapper",
++        "xyz.openbmc_project.ObjectMapper", "GetSubTree", /*timeout*/ 90000000,
++        "/xyz/openbmc_project/inventory", 0, interfaces);
+ 
+     auto matchAdd = std::make_unique<sdbusplus::bus::match_t>(
+         *systemBus, sdbusplus::bus::match::rules::interfacesAdded(),
+@@ -124,8 +566,7 @@ int triggerRdeReactor(int fd)
+         std::string vendorId;
+         std::string udevid;
+         std::string port;
+-            for (const auto& [changedInterface, changedProps] :
+-                 changedInterfaces)
++        for (const auto& [changedInterface, changedProps] : changedInterfaces)
+         {
+             if (changedInterface !=
+                 "xyz.openbmc_project.Configuration.RdeSatelliteController")
+@@ -133,7 +574,7 @@ int triggerRdeReactor(int fd)
+                 continue;
+             }
+ 
+-            if (DEBUG_ENABLED)
++            if (DEBUG)
+             {
+                 std::cerr << "DEBUG: Changed object path: "
+                           << std::string(changedObject) << "\n";
+@@ -160,47 +601,10 @@ int triggerRdeReactor(int fd)
+                 return;
+             }
+ 
+-            int netId = setupOnePort(port, udevid); // MCTP Setup
+-            deviceNetIdMap.insert({udevid, netId});
+-
+-                int rc = initiateDiscovery(fd, udevid, netId, DEST_EID,
+-                                            INSTANCE_ID);
+-            if (rc)
+-            {
+-                    std::cerr
+-                        << "PLDM/RDE Discovery failed for device: " << port
+-                          << ", udev: " << udevid << "\n";
+-                cleanupDictionaries(udevid);
+-                return;
+-            }
+-
+-            std::string objectPath = prefixPath + udevid;
+-            if (DEBUG_ENABLED)
+-            {
+-                    std::cerr << "New object path created: " << objectPath
+-                              << "\n";
+-            }
+-
+-            std::shared_ptr<sdbusplus::asio::dbus_interface> iface =
+-                objectServer.add_interface(objectPath,
+-                                           "xyz.openbmc_project.RdeDevice");
+-            iface->register_property(
+-                    "VID", vendorId,
+-                    sdbusplus::asio::PropertyPermission::readOnly);
+-            iface->register_property(
+-                    "USBPORT", port,
+-                    sdbusplus::asio::PropertyPermission::readOnly);
+-            iface->register_property(
+-                "UDEVID", udevid,
+-                sdbusplus::asio::PropertyPermission::readOnly);
+-
+-            // TODO(@harshtya): Add method to handle RDE operation requests
+-
+-            iface->initialize();
+-            dbusIntfMap.insert({std::string(changedObject), iface});
+-            objectPathDeviceId.insert({std::string(changedObject), udevid});
++            pldmSetup(fd, objectServer, std::string(changedObject), port,
++                      udevid, vendorId, prefixPath);
+         }
+-        });
++    });
+ 
+     // Remove object path if the device is removed
+     auto matchRemove = std::make_unique<sdbusplus::bus::match_t>(
+@@ -213,11 +617,9 @@ int triggerRdeReactor(int fd)
+         auto it = dbusIntfMap.find(std::string(changedObject));
+         if (it != dbusIntfMap.end())
+         {
+-                std::shared_ptr<sdbusplus::asio::dbus_interface> iface =
+-                    it->second;
++            std::shared_ptr<sdbusplus::asio::dbus_interface> iface = it->second;
+             auto removed = objectServer.remove_interface(iface);
+-                std::cout << "Removed RDE Device from tree: " << removed
+-                          << "\n";
++            std::cout << "Removed RDE Device from tree: " << removed << "\n";
+             dbusIntfMap.erase(std::string(changedObject));
+             std::string deviceId;
+             getDeviceIdForRemovedDevice(std::string(changedObject), &deviceId);
+@@ -225,12 +627,13 @@ int triggerRdeReactor(int fd)
+             if (!deviceId.empty())
+             {
+                 cleanupDictionaries(deviceId);
++                cleanupMctpLink(deviceId);
+             }
+             // TODO (@harshtya): clean up the manager for this object path
+             // TODO (@harshtya): clean up the dictionaries
+         }
+         return;
+-        });
++    });
+ 
+     systemBus->request_name("xyz.openbmc_project.rdeoperation");
+     io.run();
+@@ -257,13 +660,14 @@ int main()
+     }
+ 
+     std::cerr << "Socket Created with ID: " << fd << ". Setting timeouts...\n";
+-    setSocketTimeout(fd, /*seconds=*/5, /*milliseconds=*/0);
++    setSocketTimeout(fd, /*seconds=*/SOCKET_TIMEOUT_SECONDS,
++                     /*milliseconds=*/0);
+     socklen_t optlen;
+     int currentSendbuffSize;
+     optlen = sizeof(currentSendbuffSize);
+ 
+-    int res =
+-        getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &currentSendbuffSize, &optlen);
++    int res = getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &currentSendbuffSize,
++                         &optlen);
+     if (res == -1)
+     {
+         std::cerr << "Error in obtaining the default send buffer size, Error: "
+@@ -271,7 +675,12 @@ int main()
+         return -1;
+     }
+ 
+-    // TODO: Use PDR P&M PLDM Type to create Resource id mapping
++    rc = createResourceIdMapping();
++    if (rc)
++    {
++        std::cerr << "Resource map creation failed" << std::endl;
++        return rc;
++    }
+ 
+     rc = triggerRdeReactor(fd);
+     if (rc)
+-- 
+2.34.1
+

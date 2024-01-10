@@ -1,0 +1,402 @@
+From 9381d37a753bc633af837f8d6310f2b0b0156eb3 Mon Sep 17 00:00:00 2001
+From: Harsh Tyagi <harshtya@google.com>
+Date: Thu, 4 May 2023 21:50:17 -0700
+Subject: [PATCH] Add support for handling the PLDM base discovery responses
+ and setting the next operation in sequence
+Tested:
+Added unit test for PLDM discovery command sequence library
+Patch Tracking Bug: b/277635368
+Upstream-Status: Pending
+Upstream info / review: https://gerrit.openbmc.org/c/openbmc/libpldm/+/64232
+Justification: Blocked on design: https://gerrit.openbmc.org/c/openbmc/docs/+/61256
+---
+ .../libpldm/requester/pldm_base_requester.h   |  21 +-
+ src/requester/pldm_base_requester.c           | 181 +++++++++++++++++-
+ tests/requester/base_requester_test.cpp       | 132 ++++++++++++-
+ 3 files changed, 326 insertions(+), 8 deletions(-)
+diff --git a/include/libpldm/requester/pldm_base_requester.h b/include/libpldm/requester/pldm_base_requester.h
+index ce49637..49c4846 100644
+--- a/include/libpldm/requester/pldm_base_requester.h
++++ b/include/libpldm/requester/pldm_base_requester.h
+@@ -51,8 +51,8 @@ struct requester_base_context {
+  * @return pldm_requester_rc_t (errno may be set)
+  */
+ pldm_base_requester_rc_t
+-pldm_base_init_context(struct requester_base_context *ctx,
+-		       const char *dev_name, int net_id);
++pldm_base_init_context(struct requester_base_context *ctx, const char *dev_name,
++		       int net_id);
+ 
+ /**
+  * @brief Sets the first command to be triggered for base discovery and sets the
+@@ -79,8 +79,21 @@ pldm_base_requester_rc_t
+ pldm_base_get_next_request(struct requester_base_context *ctx,
+ 			   uint8_t instance_id, struct pldm_msg *request);
+ 
+-//TODO(@harshtya): Add pldm_push_base_response() function declaration that takes
+-//care of updating the context with the responses received for PLDM requests
++/**
++ * @brief Pushes the response values to the context based on the command
++ * type that was executed and updates the command status. It alse sets the
++ * next_command attribute of the context based on the last executed command.
++ *
++ * @param[in] ctx - a pointer to the context
++ * @param[in] resp_msg - a pointer to the response message that the caller
++ * received
++ * @param[in] resp_size - size of the response message payload
++ *
++ * @return pldm_requester_rc_t (errno may be set)
++ */
++pldm_base_requester_rc_t
++pldm_base_push_response(struct requester_base_context *ctx, void *resp_msg,
++			size_t resp_size);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/src/requester/pldm_base_requester.c b/src/requester/pldm_base_requester.c
+index 5183171..7c09d28 100644
+--- a/src/requester/pldm_base_requester.c
++++ b/src/requester/pldm_base_requester.c
+@@ -3,6 +3,7 @@
+ #include "libpldm/base.h"
+ #include "libpldm/pldm.h"
+ 
++#include <errno.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -79,4 +80,182 @@ pldm_base_get_next_request(struct requester_base_context *ctx,
+ 	return PLDM_BASE_REQUESTER_SUCCESS;
+ }
+ 
+-// TODO(@harshtya): Add code for pldm_base_push_response()
++// Get the next pldm_type from the byte array
++// Each bit in a byte represent a pldm type whether it is supported or not
++pldm_base_requester_rc_t
++pldm_base_get_next_pldm_type(struct requester_base_context *ctx,
++			     uint8_t current_type, uint8_t *next_type)
++{
++	int byte = current_type / 8;
++	int bit = current_type % 8;
++	bool is_bit_set = false;
++
++	while (byte < 8 && !is_bit_set) {
++		uint8_t current_byte = ctx->pldm_types[byte].byte;
++		int index = bit + 1;
++
++		// Skip already traversed bits of the current byte
++		current_byte = current_byte >> (bit + 1);
++		while (current_byte) {
++			if (current_byte & 1) {
++				is_bit_set = true;
++				bit = index;
++				break;
++			}
++			index++;
++			current_byte = current_byte >> 1;
++		}
++
++		if (!is_bit_set) {
++			byte++;
++			bit = -1; // We need to start from 0th bit of
++				  // the next byte
++		}
++	}
++
++	if (byte == 8 && !is_bit_set) {
++		return PLDM_BASE_REQUESTER_NO_NEXT_COMMAND_FOUND;
++	}
++	*next_type = bit + byte * 8;
++	return PLDM_BASE_REQUESTER_SUCCESS;
++}
++
++LIBPLDM_ABI_STABLE
++pldm_base_requester_rc_t
++pldm_base_push_response(struct requester_base_context *ctx, void *resp_msg,
++			size_t resp_size)
++{
++	switch (ctx->next_command) {
++	case PLDM_GET_TID: {
++		uint8_t completionCode;
++		uint8_t tid;
++		int rc = decode_get_tid_resp(
++		    resp_msg, resp_size - sizeof(struct pldm_msg_hdr),
++		    &completionCode, &tid);
++		if (rc || completionCode) {
++			ctx->requester_status =
++			    PLDM_BASE_REQUESTER_REQUEST_FAILED;
++			fprintf(stderr,
++				"Response decode failed with rc: %d, "
++				"completion code: %d and err: %d",
++				rc, completionCode, errno);
++			return PLDM_BASE_REQUESTER_NOT_RESP_MSG;
++		}
++		ctx->tid = tid;
++		ctx->next_command = PLDM_GET_PLDM_TYPES;
++		ctx->requester_status =
++		    PLDM_BASE_REQUESTER_READY_TO_PICK_NEXT_REQUEST;
++		return PLDM_BASE_REQUESTER_SUCCESS;
++	}
++
++	case PLDM_GET_PLDM_TYPES: {
++		uint8_t completionCode;
++		int rc = decode_get_types_resp(
++		    resp_msg, resp_size - sizeof(struct pldm_msg_hdr),
++		    &completionCode, ctx->pldm_types);
++		if (rc || completionCode) {
++			ctx->requester_status =
++			    PLDM_BASE_REQUESTER_REQUEST_FAILED;
++			fprintf(stderr,
++				"Response decode failed with rc: %d, "
++				"completion code: %d and err: %d",
++				rc, completionCode, errno);
++			return PLDM_BASE_REQUESTER_NOT_RESP_MSG;
++		}
++
++		// Setting the initial pldm_type as PLDM_BASE
++		ctx->command_pldm_type = PLDM_BASE;
++		ctx->next_command = PLDM_GET_PLDM_VERSION;
++		ctx->requester_status =
++		    PLDM_BASE_REQUESTER_READY_TO_PICK_NEXT_REQUEST;
++		return PLDM_BASE_REQUESTER_SUCCESS;
++	}
++
++	case PLDM_GET_PLDM_VERSION: {
++		ver32_t versionOut;
++		uint8_t completionCode;
++		uint8_t retFlag;
++		uint32_t retTransferHandle;
++		int rc = decode_get_version_resp(
++		    resp_msg, resp_size - sizeof(struct pldm_msg_hdr),
++		    &completionCode, &retTransferHandle, &retFlag, &versionOut);
++
++		if (rc || completionCode) {
++			ctx->requester_status =
++			    PLDM_BASE_REQUESTER_REQUEST_FAILED;
++			fprintf(stderr,
++				"Response decode failed with rc: %d, "
++				"completion code: %d and err: %d",
++				rc, completionCode, errno);
++			return PLDM_BASE_REQUESTER_NOT_RESP_MSG;
++		}
++		uint8_t current_pldm_type = ctx->command_pldm_type;
++
++		ctx->pldm_versions[current_pldm_type] = versionOut;
++
++		// Get the next version of the next pldm command
++		// if the type is not available then move to next
++		rc = pldm_base_get_next_pldm_type(ctx, current_pldm_type,
++						  &(ctx->command_pldm_type));
++
++		if (rc == PLDM_BASE_REQUESTER_NO_NEXT_COMMAND_FOUND) {
++			ctx->next_command = PLDM_GET_PLDM_COMMANDS;
++			ctx->requester_status =
++			    PLDM_BASE_REQUESTER_READY_TO_PICK_NEXT_REQUEST;
++			ctx->command_pldm_type =
++			    PLDM_BASE; // Setting the first PLMD_TYPE
++		} else {
++			ctx->next_command = PLDM_GET_PLDM_VERSION;
++			ctx->requester_status =
++			    PLDM_BASE_REQUESTER_READY_TO_PICK_NEXT_REQUEST;
++		}
++
++		return PLDM_BASE_REQUESTER_SUCCESS;
++	}
++
++	case PLDM_GET_PLDM_COMMANDS: {
++		uint8_t completionCode;
++		bitfield8_t pldmCmds[PLDM_MAX_CMDS_PER_TYPE / 8];
++		int rc = decode_get_commands_resp(
++		    resp_msg, resp_size - sizeof(struct pldm_msg_hdr),
++		    &completionCode, pldmCmds);
++		if (rc || completionCode) {
++			ctx->requester_status =
++			    PLDM_BASE_REQUESTER_REQUEST_FAILED;
++			fprintf(stderr,
++				"Response decode failed with rc: %d, "
++				"completion code: %d and err: %d",
++				rc, completionCode, errno);
++			return PLDM_BASE_REQUESTER_NOT_RESP_MSG;
++		}
++		uint8_t current_pldm_type = ctx->command_pldm_type;
++
++		for (int i = 0; i < (PLDM_MAX_CMDS_PER_TYPE / 8); i++) {
++			ctx->pldm_commands[current_pldm_type][i] =
++			    pldmCmds[i].byte;
++		}
++
++		rc = pldm_base_get_next_pldm_type(ctx, current_pldm_type,
++						  &(ctx->command_pldm_type));
++
++		if (rc == PLDM_BASE_REQUESTER_NO_NEXT_COMMAND_FOUND) {
++			ctx->next_command =
++			    PLDM_BASE_REQUESTER_NO_NEXT_COMMAND_FOUND;
++			ctx->requester_status =
++			    PLDM_BASE_REQUESTER_NO_PENDING_ACTION;
++			// Setting base PLDM type the PLDM Commands
++			ctx->command_pldm_type = PLDM_BASE;
++		} else {
++			ctx->next_command = PLDM_GET_PLDM_COMMANDS;
++			ctx->requester_status =
++			    PLDM_BASE_REQUESTER_READY_TO_PICK_NEXT_REQUEST;
++		}
++		return PLDM_BASE_REQUESTER_SUCCESS;
++	}
++
++	default:
++		return PLDM_BASE_REQUESTER_NO_NEXT_COMMAND_FOUND;
++	}
++
++	return PLDM_BASE_REQUESTER_NOT_PLDM_BASE_MSG;
++}
+diff --git a/tests/requester/base_requester_test.cpp b/tests/requester/base_requester_test.cpp
+index 0b589c8..8cbc20a 100644
+--- a/tests/requester/base_requester_test.cpp
++++ b/tests/requester/base_requester_test.cpp
+@@ -89,9 +89,9 @@ TEST(GetNextRequestInSequenceSuccess, PLDMBaseDiscovery)
+     rc = test_get_next_request_seq(&ctx, PLDM_GET_PLDM_COMMANDS);
+     EXPECT_EQ(rc, PLDM_BASE_REQUESTER_SUCCESS);
+ 
+-    rc = test_get_next_request_seq(&ctx, PLDM_BASE_REQUESTER_NO_NEXT_COMMAND_FOUND);
++    rc = test_get_next_request_seq(&ctx,
++                                   PLDM_BASE_REQUESTER_NO_NEXT_COMMAND_FOUND);
+     EXPECT_EQ(rc, PLDM_BASE_REQUESTER_NO_NEXT_COMMAND_FOUND);
+-
+ }
+ 
+ TEST(GetNextRequestInSequenceFailure, PLDMBaseDiscovery)
+@@ -101,4 +101,130 @@ TEST(GetNextRequestInSequenceFailure, PLDMBaseDiscovery)
+     struct requester_base_context* ctx = new requester_base_context();
+     rc = test_get_next_request_seq(&ctx, 0x0023);
+     EXPECT_EQ(rc, PLDM_BASE_REQUESTER_NO_NEXT_COMMAND_FOUND);
+-}
+\ No newline at end of file
++}
++
++TEST(PushBaseDiscoveryResponseTIDSuccess, PLDMBaseDiscovery)
++{
++    int rc;
++    struct requester_base_context* ctx = new requester_base_context();
++    rc = pldm_base_init_context(ctx, TEST_DEVICE_ID.c_str(), TEST_NET_ID);
++
++    std::vector<uint8_t> msg_tid(sizeof(pldm_msg_hdr) + /*response_bytes=*/3);
++    auto response = reinterpret_cast<pldm_msg*>(msg_tid.data());
++
++    rc = test_get_next_request_seq(&ctx, PLDM_GET_TID);
++    EXPECT_EQ(rc, PLDM_BASE_REQUESTER_SUCCESS);
++    uint8_t completion_code = 0;
++    uint8_t tid = 9;
++    encode_get_tid_resp(/*instance_id*/ 1, completion_code, tid, response);
++    rc = pldm_base_push_response(
++        ctx, response, sizeof(pldm_msg_hdr) + PLDM_GET_TID_RESP_BYTES);
++    EXPECT_EQ(rc, 0);
++    EXPECT_EQ(tid, ctx->tid);
++}
++
++TEST(PushBaseDiscoveryResponseTIDFailure, PLDMBaseDiscovery)
++{
++    int rc;
++    struct requester_base_context* ctx = new requester_base_context();
++    rc = pldm_base_init_context(ctx, TEST_DEVICE_ID.c_str(), TEST_NET_ID);
++
++    std::vector<uint8_t> msg_tid(sizeof(pldm_msg_hdr) +
++                                 PLDM_GET_TID_RESP_BYTES);
++    auto response = reinterpret_cast<pldm_msg*>(msg_tid.data());
++
++    rc = test_get_next_request_seq(&ctx, PLDM_GET_TID);
++    EXPECT_EQ(rc, PLDM_BASE_REQUESTER_SUCCESS);
++    uint8_t completion_code = 86;
++    uint8_t tid = 9;
++    encode_get_tid_resp(/*instance_id*/ 1, completion_code, tid, response);
++    rc = pldm_base_push_response(
++        ctx, response, sizeof(pldm_msg_hdr) + PLDM_GET_TID_RESP_BYTES);
++    EXPECT_EQ(rc, PLDM_BASE_REQUESTER_NOT_RESP_MSG);
++}
++
++TEST(PushBaseDiscoveryResponseGetTypesSuccess, PLDMBaseDiscovery)
++{
++    int rc = 0;
++    struct requester_base_context* ctx = new requester_base_context();
++    rc = pldm_base_init_context(ctx, TEST_DEVICE_ID.c_str(), TEST_NET_ID);
++    rc = test_get_next_request_seq(&ctx, PLDM_GET_PLDM_TYPES);
++    bitfield8_t types[8];
++    types[0].byte = 64;
++
++    std::vector<uint8_t> msg(sizeof(pldm_msg_hdr) + PLDM_GET_TYPES_RESP_BYTES);
++    auto response = reinterpret_cast<pldm_msg*>(msg.data());
++
++    encode_get_types_resp(/*instance_id*/ 1, /*completion_code*/ 0, &types[0],
++                          response);
++
++    rc = pldm_base_push_response(
++        ctx, response, sizeof(pldm_msg_hdr) + PLDM_GET_TYPES_RESP_BYTES);
++    std::cerr << "Context pldm, types:\n";
++    EXPECT_EQ(rc, 0);
++    EXPECT_EQ(ctx->pldm_types[0].byte, 64);
++}
++
++TEST(PushBaseDiscoveryResponseGetTypesFailure, PLDMBaseDiscovery)
++{
++    int rc = 0;
++    struct requester_base_context* ctx = new requester_base_context();
++    rc = pldm_base_init_context(ctx, TEST_DEVICE_ID.c_str(), TEST_NET_ID);
++    rc = test_get_next_request_seq(&ctx, PLDM_GET_PLDM_TYPES);
++    bitfield8_t types[8];
++
++    std::vector<uint8_t> msg(sizeof(pldm_msg_hdr) + PLDM_GET_TYPES_RESP_BYTES);
++    auto response = reinterpret_cast<pldm_msg*>(msg.data());
++
++    encode_get_types_resp(/*instance_id*/ 1, /*completion_code*/ 86, &types[0],
++                          response);
++
++    rc = pldm_base_push_response(
++        ctx, response, sizeof(pldm_msg_hdr) + PLDM_GET_TYPES_RESP_BYTES);
++    std::cerr << "Context pldm, types:\n";
++    EXPECT_EQ(rc, PLDM_BASE_REQUESTER_NOT_RESP_MSG);
++}
++
++TEST(PushBaseDiscoveryResponseGetCmdsSuccess, PLDMBaseDiscovery)
++{
++    int rc = 0;
++    struct requester_base_context* ctx = new requester_base_context();
++    rc = pldm_base_init_context(ctx, TEST_DEVICE_ID.c_str(), TEST_NET_ID);
++    ctx->command_pldm_type = PLDM_BASE;
++    rc = test_get_next_request_seq(&ctx, PLDM_GET_PLDM_COMMANDS);
++    bitfield8_t cmds[PLDM_MAX_CMDS_PER_TYPE / 8];
++    cmds[0].byte = 64;
++
++    std::vector<uint8_t> msg(sizeof(pldm_msg_hdr) +
++                             PLDM_GET_COMMANDS_RESP_BYTES);
++    auto response = reinterpret_cast<pldm_msg*>(msg.data());
++
++    encode_get_commands_resp(/*instance_id*/ 1, /*completion_code*/ 0, &cmds[0],
++                             response);
++
++    rc = pldm_base_push_response(
++        ctx, response, sizeof(pldm_msg_hdr) + PLDM_GET_COMMANDS_RESP_BYTES);
++    std::cerr << "Context pldm, types:\n";
++    EXPECT_EQ(rc, 0);
++    EXPECT_EQ(ctx->pldm_commands[0][0], 64);
++}
++
++TEST(PushBaseDiscoveryResponseGetCmdsFailure, PLDMBaseDiscovery)
++{
++    int rc = 0;
++    struct requester_base_context* ctx = new requester_base_context();
++    rc = pldm_base_init_context(ctx, TEST_DEVICE_ID.c_str(), TEST_NET_ID);
++    rc = test_get_next_request_seq(&ctx, PLDM_GET_PLDM_COMMANDS);
++    bitfield8_t cmds[PLDM_MAX_CMDS_PER_TYPE / 8];
++    std::vector<uint8_t> msg(sizeof(pldm_msg_hdr) +
++                             PLDM_GET_COMMANDS_RESP_BYTES);
++    auto response = reinterpret_cast<pldm_msg*>(msg.data());
++
++    encode_get_commands_resp(/*instance_id*/ 1, /*completion_code*/ 86,
++                             &cmds[0], response);
++
++    rc = pldm_base_push_response(
++        ctx, response, sizeof(pldm_msg_hdr) + PLDM_GET_COMMANDS_RESP_BYTES);
++    std::cerr << "Context pldm, types:\n";
++    EXPECT_EQ(rc, PLDM_BASE_REQUESTER_NOT_RESP_MSG);
++}
+-- 
+2.43.0.rc2.451.g8631bc7472-goog

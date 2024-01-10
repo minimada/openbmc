@@ -1,0 +1,353 @@
+From 950c48197417ed7184ba922736618c29c9e60d5d Mon Sep 17 00:00:00 2001
+From: Harsh Tyagi <harshtya@google.com>
+Date: Mon, 24 Jul 2023 22:10:11 +0000
+Subject: [PATCH] Add PLDM Base discovery command sequence library
+Tested:
+Added unit test for PLDM discovery command sequence library
+Patch Tracking Bug: b/277635368
+Upstream-Status: Pending
+Upstream info / review: https://gerrit.openbmc.org/c/openbmc/libpldm/+/64103
+Justification: Blocked on design: https://gerrit.openbmc.org/c/openbmc/docs/+/61256
+---
+ include/libpldm/meson.build                   |   1 +
+ .../libpldm/requester/pldm_base_requester.h   |  89 +++++++++++++++
+ src/requester/meson.build                     |   3 +-
+ src/requester/pldm_base_requester.c           |  82 ++++++++++++++
+ tests/meson.build                             |   1 +
+ tests/requester/base_requester_test.cpp       | 104 ++++++++++++++++++
+ 6 files changed, 279 insertions(+), 1 deletion(-)
+ create mode 100644 include/libpldm/requester/pldm_base_requester.h
+ create mode 100644 src/requester/pldm_base_requester.c
+ create mode 100644 tests/requester/base_requester_test.cpp
+diff --git a/include/libpldm/meson.build b/include/libpldm/meson.build
+index 235a7a6..22f6295 100644
+--- a/include/libpldm/meson.build
++++ b/include/libpldm/meson.build
+@@ -16,6 +16,7 @@ libpldm_headers = files(
+   'transport/af-mctp.h',
+   'transport/mctp-demux.h',
+   'utils.h',
++  'requester/pldm_base_requester.h',
+   )
+ 
+ if get_option('oem-ibm').allowed()
+diff --git a/include/libpldm/requester/pldm_base_requester.h b/include/libpldm/requester/pldm_base_requester.h
+new file mode 100644
+index 0000000..ce49637
+--- /dev/null
++++ b/include/libpldm/requester/pldm_base_requester.h
+@@ -0,0 +1,89 @@
++#ifndef PLDM_BASE_REQUESTER_H
++#define PLDM_BASE_REQUESTER_H
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++#include "libpldm/base.h"
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#define PLDM_TYPES 6
++#define MAX_DEV_NAME_SIZE 32
++
++typedef enum requester_return_codes {
++	PLDM_BASE_REQUESTER_SUCCESS = 0,
++	PLDM_BASE_REQUESTER_NOT_PLDM_BASE_MSG = -1,
++	PLDM_BASE_REQUESTER_NOT_RESP_MSG = -2,
++	PLDM_BASE_REQUESTER_SEND_FAIL = -3,
++	PLDM_BASE_REQUESTER_RECV_FAIL = -4,
++	PLDM_BASE_REQUESTER_NO_NEXT_COMMAND_FOUND = -5,
++	PLDM_BASE_REQUESTER_ENCODING_REQUEST_FAILURE = -6,
++	PLDM_BASE_CONTEXT_INITIALIZATION_ERROR = -7,
++	PLDM_BASE_CONTEXT_NOT_READY = -8
++} pldm_base_requester_rc_t;
++
++typedef enum requester_status {
++	PLDM_BASE_REQUESTER_REQUEST_FAILED = -1,
++	PLDM_BASE_REQUESTER_READY_TO_PICK_NEXT_REQUEST = 0,
++	PLDM_BASE_REQUESTER_WAITING_FOR_RESPONSE = 1,
++	PLDM_BASE_REQUESTER_NO_PENDING_ACTION = 2
++} req_status_t;
++
++struct requester_base_context {
++	bool initialized;
++	uint8_t next_command;
++	uint8_t requester_status;
++	uint8_t command_pldm_type;
++	uint8_t tid;
++	char dev_name[MAX_DEV_NAME_SIZE];
++	int net_id; // MCTP network id
++	bitfield8_t pldm_types[PLDM_MAX_TYPES / 8];
++	uint8_t pldm_commands[PLDM_MAX_TYPES][PLDM_MAX_CMDS_PER_TYPE];
++	ver32_t pldm_versions[PLDM_MAX_TYPES];
++};
++/**
++ * @brief Initializes the context for PLDM Base discovery commands
++ *
++ * @param[in] ctx - pointer to a context which is to be initialized
++ *
++ * @return pldm_requester_rc_t (errno may be set)
++ */
++pldm_base_requester_rc_t
++pldm_base_init_context(struct requester_base_context *ctx,
++		       const char *dev_name, int net_id);
++
++/**
++ * @brief Sets the first command to be triggered for base discovery and sets the
++ * status of context to "Ready to PICK"
++ *
++ * @param[in] ctx - pointer to a context which is to be initialized
++ *
++ * @return pldm_requester_rc_t (errno may be set)
++ */
++pldm_base_requester_rc_t
++pldm_base_start_discovery(struct requester_base_context *ctx);
++/**
++ * @brief Gets the next PLDM command from a request buffer to be processed
++ *
++ * @param[in] ctx - pointer to a context which is to be initialized
++ * @param[in] instance_id - instance id of the pldm requester
++ * @param[out] request - byte array that will store the encoded request msg
++ * according to the pldm command type. Caller is responsible for allocating and
++ * cleaning up memory of this variable
++ *
++ * @return pldm_requester_rc_t (errno may be set)
++ */
++pldm_base_requester_rc_t
++pldm_base_get_next_request(struct requester_base_context *ctx,
++			   uint8_t instance_id, struct pldm_msg *request);
++
++//TODO(@harshtya): Add pldm_push_base_response() function declaration that takes
++//care of updating the context with the responses received for PLDM requests
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* PLDM_BASE_REQUESTER_H */
+\ No newline at end of file
+diff --git a/src/requester/meson.build b/src/requester/meson.build
+index 663b607..47571ba 100644
+--- a/src/requester/meson.build
++++ b/src/requester/meson.build
+@@ -1,4 +1,5 @@
+ libpldm_sources += files(
+   'instance-id.c',
+-  'pldm.c'
++  'pldm.c',
++  'pldm_base_requester.c',
+   )
+diff --git a/src/requester/pldm_base_requester.c b/src/requester/pldm_base_requester.c
+new file mode 100644
+index 0000000..5183171
+--- /dev/null
++++ b/src/requester/pldm_base_requester.c
+@@ -0,0 +1,82 @@
++#include "libpldm/requester/pldm_base_requester.h"
++
++#include "libpldm/base.h"
++#include "libpldm/pldm.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++LIBPLDM_ABI_STABLE
++pldm_base_requester_rc_t
++pldm_base_init_context(struct requester_base_context *ctx,
++		       const char *device_id, int net_id)
++{
++	if (ctx->initialized) {
++		fprintf(stderr, "No memory allocated to base context\n");
++		return PLDM_BASE_CONTEXT_INITIALIZATION_ERROR;
++	}
++
++	ctx->initialized = true;
++	ctx->requester_status = PLDM_BASE_REQUESTER_NO_PENDING_ACTION;
++	strcpy(ctx->dev_name, device_id);
++	ctx->net_id = net_id;
++	return PLDM_BASE_REQUESTER_SUCCESS;
++}
++
++LIBPLDM_ABI_STABLE
++pldm_base_requester_rc_t
++pldm_base_start_discovery(struct requester_base_context *ctx)
++{
++	if (!ctx->initialized &&
++	    ctx->requester_status != PLDM_BASE_REQUESTER_NO_PENDING_ACTION) {
++		return PLDM_BASE_CONTEXT_NOT_READY;
++	}
++	ctx->next_command = PLDM_GET_TID;
++	ctx->requester_status = PLDM_BASE_REQUESTER_READY_TO_PICK_NEXT_REQUEST;
++	return PLDM_BASE_REQUESTER_SUCCESS;
++}
++
++LIBPLDM_ABI_STABLE
++pldm_base_requester_rc_t
++pldm_base_get_next_request(struct requester_base_context *ctx,
++			   uint8_t instance_id, struct pldm_msg *request)
++{
++	int rc;
++	switch (ctx->next_command) {
++	case PLDM_GET_TID: {
++		rc = encode_get_tid_req(instance_id, request);
++		break;
++	}
++	case PLDM_GET_PLDM_TYPES: {
++		rc = encode_get_types_req(instance_id, request);
++		break;
++	}
++	case PLDM_GET_PLDM_VERSION: {
++		uint8_t pldm_type = ctx->command_pldm_type;
++		rc = encode_get_version_req(instance_id, /*transfer_handle=*/0,
++					    PLDM_GET_FIRSTPART, pldm_type,
++					    request);
++		break;
++	}
++
++	case PLDM_GET_PLDM_COMMANDS: {
++		uint8_t pldmType = ctx->command_pldm_type;
++		rc = encode_get_commands_req(instance_id, pldmType,
++					     ctx->pldm_versions[pldmType],
++					     request);
++		break;
++	}
++
++	default:
++		return PLDM_BASE_REQUESTER_NO_NEXT_COMMAND_FOUND;
++	}
++
++	if (rc) {
++		fprintf(stderr, "Unable to encode request with rc: %d", rc);
++		return PLDM_BASE_REQUESTER_ENCODING_REQUEST_FAILURE;
++	}
++	return PLDM_BASE_REQUESTER_SUCCESS;
++}
++
++// TODO(@harshtya): Add code for pldm_base_push_response()
+diff --git a/tests/meson.build b/tests/meson.build
+index dba7870..a15e7ec 100644
+--- a/tests/meson.build
++++ b/tests/meson.build
+@@ -25,6 +25,7 @@ tests = [
+   'libpldm_firmware_update_test',
+   'msgbuf',
+   'responder',
++  'requester/base_requester_test',
+ ]
+ 
+ if get_option('abi').contains('testing')
+diff --git a/tests/requester/base_requester_test.cpp b/tests/requester/base_requester_test.cpp
+new file mode 100644
+index 0000000..0b589c8
+--- /dev/null
++++ b/tests/requester/base_requester_test.cpp
+@@ -0,0 +1,104 @@
++#include <string.h>
++
++#include <array>
++#include <cstring>
++#include <iostream>
++#include <vector>
++
++#include "libpldm/requester/pldm_base_requester.h"
++
++#include <gmock/gmock.h>
++#include <gtest/gtest.h>
++
++std::string TEST_DEVICE_ID = "DEVICE_ID";
++int TEST_NET_ID = 1;
++uint8_t TEST_INSTANCE_ID = 1;
++
++std::map<uint8_t, int> command_request_size = {
++    {PLDM_GET_TID, 0},
++    {PLDM_GET_PLDM_TYPES, 0},
++    {PLDM_GET_PLDM_VERSION, PLDM_GET_VERSION_REQ_BYTES},
++    {PLDM_GET_PLDM_COMMANDS, PLDM_GET_COMMANDS_REQ_BYTES}};
++
++int get_request_bytes(uint8_t request_type)
++{
++    auto it = command_request_size.find(request_type);
++    if (it != command_request_size.end())
++    {
++        return it->second;
++    }
++    return -1;
++}
++TEST(BaseContextInitializationSuccess, PLDMBaseDiscovery)
++{
++    struct requester_base_context* ctx = new requester_base_context();
++    int rc = pldm_base_init_context(ctx, TEST_DEVICE_ID.c_str(), TEST_NET_ID);
++    EXPECT_EQ(rc, PLDM_BASE_REQUESTER_SUCCESS);
++    EXPECT_EQ(ctx->initialized, true);
++    EXPECT_EQ(ctx->requester_status, PLDM_BASE_REQUESTER_NO_PENDING_ACTION);
++}
++
++TEST(BaseContextStartDiscovery, PLDMBaseDiscovery)
++{
++    // Initializing context
++    struct requester_base_context* ctx = new requester_base_context();
++    int rc = pldm_base_init_context(ctx, TEST_DEVICE_ID.c_str(), TEST_NET_ID);
++
++    rc = pldm_base_start_discovery(ctx);
++    EXPECT_EQ(rc, PLDM_BASE_REQUESTER_SUCCESS);
++    EXPECT_EQ(ctx->next_command, PLDM_GET_TID);
++    EXPECT_EQ(ctx->requester_status,
++              PLDM_BASE_REQUESTER_READY_TO_PICK_NEXT_REQUEST);
++}
++
++TEST(BaseContextStartDiscoveryFailure, PLDMBaseDiscovery)
++{
++    struct requester_base_context* ctx = new requester_base_context();
++
++    int rc = pldm_base_start_discovery(ctx);
++    EXPECT_EQ(rc, PLDM_BASE_CONTEXT_NOT_READY);
++}
++
++int test_get_next_request_seq(struct requester_base_context** ctx,
++                              uint8_t next_command)
++{
++    (*ctx)->next_command = next_command;
++    int requestBytes = get_request_bytes((*ctx)->next_command);
++    std::vector<uint8_t> msg_tid(sizeof(pldm_msg_hdr) + requestBytes);
++    auto request = reinterpret_cast<pldm_msg*>(msg_tid.data());
++    return pldm_base_get_next_request(*ctx, TEST_INSTANCE_ID, request);
++}
++
++TEST(GetNextRequestInSequenceSuccess, PLDMBaseDiscovery)
++{
++    int rc;
++    // Initializing context
++    struct requester_base_context* ctx = new requester_base_context();
++    rc = pldm_base_init_context(ctx, TEST_DEVICE_ID.c_str(), TEST_NET_ID);
++    rc = pldm_base_start_discovery(ctx);
++
++    rc = test_get_next_request_seq(&ctx, PLDM_GET_TID);
++    EXPECT_EQ(rc, PLDM_BASE_REQUESTER_SUCCESS);
++
++    rc = test_get_next_request_seq(&ctx, PLDM_GET_PLDM_TYPES);
++    EXPECT_EQ(rc, PLDM_BASE_REQUESTER_SUCCESS);
++
++    rc = test_get_next_request_seq(&ctx, PLDM_GET_PLDM_VERSION);
++    EXPECT_EQ(rc, PLDM_BASE_REQUESTER_SUCCESS);
++
++    rc = test_get_next_request_seq(&ctx, PLDM_GET_PLDM_COMMANDS);
++    EXPECT_EQ(rc, PLDM_BASE_REQUESTER_SUCCESS);
++
++    rc = test_get_next_request_seq(&ctx, PLDM_BASE_REQUESTER_NO_NEXT_COMMAND_FOUND);
++    EXPECT_EQ(rc, PLDM_BASE_REQUESTER_NO_NEXT_COMMAND_FOUND);
++
++}
++
++TEST(GetNextRequestInSequenceFailure, PLDMBaseDiscovery)
++{
++    int rc;
++    // Initializing context
++    struct requester_base_context* ctx = new requester_base_context();
++    rc = test_get_next_request_seq(&ctx, 0x0023);
++    EXPECT_EQ(rc, PLDM_BASE_REQUESTER_NO_NEXT_COMMAND_FOUND);
++}
+\ No newline at end of file
+-- 
+2.43.0.rc2.451.g8631bc7472-goog

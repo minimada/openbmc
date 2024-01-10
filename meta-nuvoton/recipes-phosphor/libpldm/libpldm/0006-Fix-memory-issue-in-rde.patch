@@ -1,0 +1,129 @@
+From ddd5cbdd8dbd62b7fa8f8b9177b5a6b25189d79c Mon Sep 17 00:00:00 2001
+From: Harsh Tyagi <harshtya@google.com>
+Date: Thu, 30 Nov 2023 09:14:48 +0000
+Subject: [PATCH] Fix memory issue in rde
+---
+ include/libpldm/requester/pldm_rde_requester.h |  2 +-
+ src/pldm_rde.c                                 |  2 +-
+ src/requester/pldm.c                           |  2 +-
+ src/requester/pldm_rde_requester.c             | 14 ++++++++------
+ tests/requester/rde_requester_test.cpp         |  7 +++----
+ 5 files changed, 14 insertions(+), 13 deletions(-)
+diff --git a/include/libpldm/requester/pldm_rde_requester.h b/include/libpldm/requester/pldm_rde_requester.h
+index c723733..7215743 100644
+--- a/include/libpldm/requester/pldm_rde_requester.h
++++ b/include/libpldm/requester/pldm_rde_requester.h
+@@ -184,7 +184,7 @@ struct pldm_rde_requester_manager {
+ 	uint32_t resource_ids[MAX_RESOURCE_IDS];
+ 	uint8_t number_of_resources;
+ 
+-	struct pldm_rde_device_info *device;
++	struct pldm_rde_device_info device;
+ 	// Pointer to an array of contexts of size n_ctx.
+ 	struct pldm_rde_requester_context *ctx;
+ 	// A callback to free the pldm_rde_requester_context memory.
+diff --git a/src/pldm_rde.c b/src/pldm_rde.c
+index 0bd41df..4814375 100644
+--- a/src/pldm_rde.c
++++ b/src/pldm_rde.c
+@@ -662,7 +662,7 @@ int decode_rde_operation_init_resp(
+ 	if (PLDM_SUCCESS != *completion_code) {
+ 		fprintf(stderr, "Unsuccessful completion code received in op init: %x\n",
+             (uint8_t)(*completion_code));
+-		return PLDM_SUCCESS;
++		return PLDM_ERROR;
+ 	}
+ 
+ 	if (payload_length < RDE_READ_OPERATION_INIT_MIN_BYTES) {
+diff --git a/src/requester/pldm.c b/src/requester/pldm.c
+index abff0b5..c6fbf09 100644
+--- a/src/requester/pldm.c
++++ b/src/requester/pldm.c
+@@ -249,7 +249,7 @@ static pldm_requester_rc_t mctp_recv_at_network(mctp_eid_t eid, int mctp_fd,
+                                  (struct sockaddr*)&addr, &addrlen);
+         if (length != bytes)
+         {
+-            fprintf(stderr, "Recevie from socket failed with errno: %d\n", errno);
++            fprintf(stderr, "Receive from socket failed, errno: %d\n", errno);
+             return PLDM_REQUESTER_INVALID_RECV_LEN;
+         }
+         *resp_msg_len = length;
+diff --git a/src/requester/pldm_rde_requester.c b/src/requester/pldm_rde_requester.c
+index a342748..b06b0c8 100644
+--- a/src/requester/pldm_rde_requester.c
++++ b/src/requester/pldm_rde_requester.c
+@@ -140,16 +140,13 @@ pldm_rde_discovery_push_response(struct pldm_rde_requester_manager *manager,
+ 	switch (ctx->next_command) {
+ 	case PLDM_NEGOTIATE_REDFISH_PARAMETERS: {
+ 		uint8_t completion_code = DEFAULT_INIT;
+-		struct pldm_rde_device_info *deviceInfo =
+-		    malloc(sizeof(struct pldm_rde_device_info));
+ 		rc = decode_negotiate_redfish_parameters_resp(
+ 		    resp_msg, resp_size - sizeof(struct pldm_msg_hdr),
+-		    &completion_code, deviceInfo);
++		    &completion_code, &manager->device);
+ 		if (rc || completion_code) {
+ 			ctx->requester_status =
+ 			    PLDM_RDE_REQUESTER_REQUEST_FAILED;
+ 		}
+-		manager->device = deviceInfo;
+ 		ctx->next_command = PLDM_NEGOTIATE_MEDIUM_PARAMETERS;
+ 		ctx->context_status = CONTEXT_FREE;
+ 		ctx->requester_status =
+@@ -166,7 +163,7 @@ pldm_rde_discovery_push_response(struct pldm_rde_requester_manager *manager,
+ 			ctx->requester_status =
+ 			    PLDM_RDE_REQUESTER_REQUEST_FAILED;
+ 		}
+-		manager->device->device_maximum_transfer_chunk_size =
++		manager->device.device_maximum_transfer_chunk_size =
+ 		    max_device_transfer_size;
+ 
+ 		manager->negotiated_transfer_size =
+@@ -607,7 +604,7 @@ pldm_rde_requester_rc_t pldm_rde_push_read_operation_response(
+ 	}
+ 	case PLDM_RDE_MULTIPART_RECEIVE: {
+ 		uint8_t completion_code, ret_transfer_flag;
+-		uint8_t *payload = malloc(sizeof(uint8_t));
++		uint8_t *payload = NULL;
+ 		uint32_t ret_data_transfer_handle, data_length_bytes;
+ 
+ 		rc = decode_rde_multipart_receive_resp(
+@@ -659,11 +656,16 @@ free_rde_op_init_context(struct pldm_rde_requester_context *ctx)
+ 	if (operation != NULL) {
+ 		if (operation->resp_permission_flags != NULL) {
+ 			free(operation->resp_permission_flags);
++			operation->resp_permission_flags = NULL;
+ 		}
+ 
+ 		if (operation->resp_operation_flags != NULL) {
+ 			free(operation->resp_operation_flags);
++			operation->resp_operation_flags = NULL;
+ 		}
++
++		free(operation);
++		ctx->operation_ctx = NULL;
+ 	}
+ 	return PLDM_RDE_REQUESTER_SUCCESS;
+ }
+diff --git a/tests/requester/rde_requester_test.cpp b/tests/requester/rde_requester_test.cpp
+index 4a26ca0..033fa65 100644
+--- a/tests/requester/rde_requester_test.cpp
++++ b/tests/requester/rde_requester_test.cpp
+@@ -348,12 +348,11 @@ TEST_F(TestRdeRequester, PushDiscoveryResponseRedfishParamSuccess)
+     rc = pldm_rde_discovery_push_response(manager, base_context, responsePtr,
+                                           responseMsgSize);
+ 
+-    struct pldm_rde_device_info* deviceInfo = manager->device;
+     EXPECT_EQ(rc, PLDM_RDE_REQUESTER_SUCCESS);
+-    EXPECT_EQ(deviceInfo->device_concurrency, mcConcurrency);
+-    EXPECT_EQ(deviceInfo->device_capabilities_flag.byte,
++    EXPECT_EQ(manager->device.device_concurrency, mcConcurrency);
++    EXPECT_EQ(manager->device.device_capabilities_flag.byte,
+               devCapabilities_.byte);
+-    EXPECT_EQ(deviceInfo->device_feature_support.value,
++    EXPECT_EQ(manager->device.device_feature_support.value,
+               mcFeatures.value);
+     EXPECT_EQ(base_context->next_command, PLDM_NEGOTIATE_MEDIUM_PARAMETERS);
+ 
+-- 
+2.43.0.rc2.451.g8631bc7472-goog

@@ -1,0 +1,328 @@
+From 775952d5adb6830b5cc449cf06af71a70024d3af Mon Sep 17 00:00:00 2001
+From: Harsh Tyagi <harshtya@google.com>
+Date: Thu, 04 May 2023 23:42:40 -0700
+Subject: [PATCH] Add RDE Daemon support to commuicate over MCTP
+
+Justification:
+https://gerrit.openbmc.org/c/openbmc/docs/+/61256
+
+Change-Id: Ib8ceb7a3dba4068e33e10f6132eac47e916cd876
+Signed-off-by: Harsh Tyagi <harshtya@google.com>
+---
+
+diff --git a/meson.build b/meson.build
+index 2e4d8fd9e..3298af15e 100644
+--- a/meson.build
++++ b/meson.build
+@@ -134,7 +134,7 @@ if get_option('tests').allowed()
+ endif
+
+ libpldm_dep = dependency('libpldm', fallback:['libpldm','libpldm_dep'])
+-
++libbej_dep = dependency('libbej', fallback:['libbej'])
+
+ libpldmutils_headers = ['.']
+ libpldmutils = library(
+@@ -206,7 +206,7 @@ if get_option('systemd').allowed()
+ endif
+
+ subdir('pldmtool')
+-
++subdir('rded')
+ subdir('configurations')
+
+ if get_option('utilities').allowed()
+diff --git a/rded/mctp.h b/rded/mctp.h
+new file mode 100644
+index 0000000..dd73ad0
+--- /dev/null
++++ b/rded/mctp.h
+@@ -0,0 +1,110 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * mctp: userspace utility for managing the kernel MCTP stack.
++ *
++ * Interim definitions for the MCTP kernel interface. While the MCTP kernel
++ * API is going through upstream, system toolchains may not yet have the
++ * required definitions for mctp tools. This header provides fallback
++ * implementations (protected by #ifdef guards) of those new interfaces.
++ *
++ * Copyright (c) 2021 Code Construct
++ * Copyright (c) 2021 Google
++ */
++
++#ifndef _MCTP_H
++#define _MCTP_H
++
++#include "config.h"
++
++#if HAVE_LINUX_MCTP_H
++#include <linux/mctp.h>
++#endif
++#include <linux/if_link.h>
++
++#ifndef AF_MCTP
++#define AF_MCTP 45
++#endif
++
++/* MCTP serial line discipline */
++#ifndef N_MCTP
++#define N_MCTP 28
++#endif
++
++#include <stdint.h>
++
++#ifndef MCTP_NET_ANY
++
++typedef uint8_t mctp_eid_t;
++
++struct mctp_addr
++{
++    mctp_eid_t s_addr;
++};
++
++struct sockaddr_mctp
++{
++    unsigned short int smctp_family;
++    unsigned short __smctp_pad0;
++    int smctp_network;
++    struct mctp_addr smctp_addr;
++    uint8_t smctp_type;
++    uint8_t smctp_tag;
++    uint8_t __smctp_pad1;
++};
++
++#define MCTP_NET_ANY 0
++#define MCTP_ADDR_ANY 0xff
++#define MCTP_TAG_OWNER 0x00
++
++#endif /* MCTP_NET_ANY */
++
++#ifndef SIOCMCTPALLOCTAG
++#define SIOCMCTPALLOCTAG SIOCPROTOPRIVATE
++struct mctp_ioc_tag_ctl
++{
++    mctp_eid_t peer_addr;
++    __u8 tag;
++    __u16 flags;
++};
++#endif
++
++#ifndef MAX_ADDR_LEN
++#define MAX_ADDR_LEN 32
++#endif
++
++/* Added in v5.16 */
++#ifndef MCTP_OPT_ADDR_EXT
++
++#define MCTP_OPT_ADDR_EXT 1
++
++struct sockaddr_mctp_ext
++{
++    struct sockaddr_mctp smctp_base;
++    int smctp_ifindex;
++    uint8_t smctp_halen;
++    uint8_t __smctp_pad0[3];
++    unsigned char smctp_haddr[MAX_ADDR_LEN];
++};
++
++#endif /* MCTP_OPT_ADDR_EXT */
++
++#ifndef IFLA_MCTP_MAX
++/* From if_link.h */
++enum
++{
++    IFLA_MCTP_UNSPEC,
++    IFLA_MCTP_NET,
++    __IFLA_MCTP_MAX,
++};
++
++#define IFLA_MCTP_MAX (__IFLA_MCTP_MAX - 1)
++
++#endif /* IFLA_MCTP_MAX */
++/* setsockopt(2) options */
++#ifndef SOL_MCTP
++#define SOL_MCTP 285
++#endif
++#ifndef RTNLGRP_MCTP_IFADDR
++#define RTNLGRP_MCTP_IFADDR 34
++#endif
++#endif /* _MCTP_H */
+\ No newline at end of file
+diff --git a/rded/meson.build b/rded/meson.build
+new file mode 100644
+index 0000000..02cb675
+--- /dev/null
++++ b/rded/meson.build
+@@ -0,0 +1,71 @@
++sources = [
++  'rded.cpp',
++]
++
++args = [
++  '-DBOOST_ASIO_DISABLE_THREADS',
++  '-DBOOST_ALL_NO_LIB',
++  '-DBOOST_SYSTEM_NO_DEPRECATED',
++  '-DBOOST_ERROR_CODE_HEADER_ONLY',
++  '-DBOOST_COROUTINES_NO_DEPRECATION_WARNING']
++headers = ['.', '..']
++requester_inc = include_directories(headers)
++req_src = declare_dependency(
++          sources: [
++            '../pldmd/dbus_impl_requester.cpp',
++            '../pldmd/instance_id.cpp'],
++          include_directories:requester_inc)
++boost = dependency('boost',version : '>=1.80.0', required : false, include_type: 'system')
++
++if not boost.found()
++  boost = subproject('boost', required: true).get_variable('boost_dep')
++  boost = boost.as_system('system')
++endif
++
++boost_compile_args = [
++    '-DBOOST_ASIO_DISABLE_THREADS',
++    '-DBOOST_ALL_NO_LIB',
++    '-DBOOST_SYSTEM_NO_DEPRECATED',
++    '-DBOOST_ERROR_CODE_HEADER_ONLY',
++    '-DBOOST_COROUTINES_NO_DEPRECATION_WARNING',
++]
++
++boost_dep = declare_dependency(
++    dependencies: dependency('boost',modules: ['coroutine', 'context'], disabler:true, required: false),
++    compile_args: boost_compile_args)
++
++deps = [
++  libpldm_dep,
++  libbej_dep,
++  boost_dep,
++  nlohmann_json,
++  phosphor_dbus_interfaces,
++  libpldmutils,
++  sdbusplus,
++  sdeventplus,
++  stdplus,
++  req_src,
++]
++executable(
++  'rded',
++  sources,
++  link_args: dynamic_linker,
++  implicit_include_directories: false,
++  dependencies: deps,
++  install: true,
++  install_dir: get_option('bindir'),
++  link_args : ['-ludev'])
++if get_option('systemd').enabled()
++  systemd_system_unit_dir = dependency('systemd').get_variable(
++          pkgconfig: 'systemdsystemunitdir')
++systemd_system_unit_dir = dependency('systemd').get_variable(
++          pkgconfig: 'systemdsystemunitdir')
++ 
++configure_file(
++  copy: true,
++  input: 'service_files/rded.service',
++  install: true,
++  install_dir: systemd_system_unit_dir,
++  output: 'rded.service',
++)
++endif
+\ No newline at end of file
+diff --git a/rded/rded.cpp b/rded/rded.cpp
+new file mode 100644
+index 0000000..3f06924
+--- /dev/null
++++ b/rded/rded.cpp
+@@ -0,0 +1,65 @@
++#include <locale.h>
++#include <unistd.h>
++#include <cstddef>
++
++#include <signal.h>
++#include <string.h>
++#include <sys/socket.h>
++#include <iostream>
++#include <vector>
++
++#include <sdeventplus/event.hpp>
++#include "common/utils.hpp"
++using namespace sdeventplus;
++using namespace pldm::utils;
++
++// MCTP Socket for RDE communication
++int fd;
++
++void set_socket_timeout(int fd, int seconds, int milliseconds)
++{
++    struct timeval tv;
++    tv.tv_sec = seconds;
++    tv.tv_usec = milliseconds;
++    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
++}
++
++int main()
++{
++    int rc;
++    std::cerr << "Successfully started the RDE Daemon \n";
++    fd = socket(AF_MCTP, SOCK_DGRAM, 0);
++    if (-1 == fd)
++    {
++        std::cerr << "Created socket Failed\n";
++        return fd;
++    }
++
++    std::cerr << "Socket Created with ID: " << fd << ". Setting timeouts...\n";
++    set_socket_timeout(fd, /*seconds=*/5, /*milliseconds=*/0);
++    socklen_t optlen;
++    int currentSendbuffSize;
++    optlen = sizeof(currentSendbuffSize);
++
++    int res = getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &currentSendbuffSize, &optlen);
++    if (res == -1)
++    {
++        std::cerr << "Error in obtaining the default send buffer size, Error: "
++                  << strerror(errno) << std::endl;
++        return -1;
++    }
++
++    // TODO: Use PDR P&M PLDM Type to create Resource id mapping
++
++    // TODO (@harstya): Create a RDE Reactor to react to RDE Devices detected
++
++    // Daemon loop
++    auto event = Event::get_default();
++    rc = event.loop();
++    if (rc)
++    {
++        exit(EXIT_FAILURE);
++    }
++    exit(EXIT_SUCCESS);
++}
++
+diff --git a/rded/service_files/rded.service b/rded/service_files/rded.service
+new file mode 100644
+index 0000000..eb3af9b
+--- /dev/null
++++ b/rded/service_files/rded.service
+@@ -0,0 +1,10 @@
++[Unit]
++Description=Phosphor RDE Daemon
++
++[Service]
++Type=simple
++Restart=always
++ExecStart=/usr/bin/rded
++
++[Install]
++WantedBy=multi-user.target
+diff --git a/subprojects/libbej.wrap b/subprojects/libbej.wrap
+new file mode 100644
+index 0000000..a332f71
+--- /dev/null
++++ b/subprojects/libbej.wrap
+@@ -0,0 +1,5 @@
++[wrap-git]
++url = https://github.com/openbmc/libbej
++revision = HEAD
++[provide]
++libbej = libbej
+\ No newline at end of file

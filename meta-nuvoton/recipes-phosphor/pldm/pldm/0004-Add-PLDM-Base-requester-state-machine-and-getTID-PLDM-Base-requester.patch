@@ -1,0 +1,281 @@
+From b858114e1989d0fd77cc7c3db4da7c0f42c0b65f Mon Sep 17 00:00:00 2001
+From: Harsh Tyagi <harshtya@google.com>
+Date: Thu, 11 May 2023 20:03:04 +0000
+Subject: [PATCH] Add PLDM Base requester state machine and getTID PLDM Base requester
+
+Tested:
+
+Tested on dev-board and meta-gms machine. To get the TID for the RDE
+Device
+
+Justification: (Design under review)
+https://gerrit.openbmc.org/c/openbmc/docs/+/61256
+
+Change-Id: I1cad310340b8d4ee04d1e622492d58e4a7f9f28e
+Signed-off-by: Harsh Tyagi <harshtya@google.com>
+---
+
+diff --git a/rded/helper/common.hpp b/rded/helper/common.hpp
+new file mode 100644
+index 0000000..33a11aa
+--- /dev/null
++++ b/rded/helper/common.hpp
+@@ -0,0 +1,11 @@
++#pragma once
++
++#define PLDM_MAX_REQUEST_BYTES 2048
++#define MAX_RETRIES_FOR_REQUEST 500
++
++enum ContextState
++{
++    RDE_CONTEXT_FREE = 0,
++    RDE_CONTEXT_NOT_FREE = 1,
++    RDE_NO_CONTEXT_FOUND = 2,
++};
+diff --git a/rded/helper/discovery/base_discovery.cpp b/rded/helper/discovery/base_discovery.cpp
+new file mode 100644
+index 0000000..11f4002
+--- /dev/null
++++ b/rded/helper/discovery/base_discovery.cpp
+@@ -0,0 +1,147 @@
++#include "libpldm/base.h"
++#include "libpldm/pldm.h"
++#include "libpldm/pldm_base_requester.h"
++
++#include "helper/common.hpp"
++
++#include <cstring>
++#include <iostream>
++#include <map>
++#include <vector>
++
++// TODO(@harshtya): Write test case for the functions once docker image is
++// created with the latest code dependenncies
++// TODO(@harshtya): Remove when all the base commands are supported
++#define PLDM_NEXT_CMD_NOT_SUPPORTED 2
++
++const bool DEBUG = false;
++const int BASE_REQUEST_RETRIES = 50;
++
++std::map<uint8_t, int> baseCommandRequestSize = {
++    {PLDM_GET_TID, 0},
++    {PLDM_GET_PLDM_TYPES, 0},
++    {PLDM_GET_PLDM_VERSION, PLDM_GET_VERSION_REQ_BYTES},
++    {PLDM_GET_PLDM_COMMANDS, PLDM_GET_COMMANDS_REQ_BYTES}};
++
++int processGetTidRequest(int fd, uint8_t eid, int instanceId,
++                         struct requester_base_context* ctx,
++                         std::vector<uint8_t> requestMsg)
++{
++    int rc;
++    rc = pldm_send_at_network(eid, ctx->net_id, fd, requestMsg.data(),
++                              requestMsg.size());
++    if (rc)
++    {
++        ctx->requester_status = PLDM_BASE_REQUESTER_REQUEST_FAILED;
++        return PLDM_BASE_REQUESTER_SEND_FAIL;
++    }
++    std::vector<uint8_t> response(
++        sizeof(pldm_msg_hdr) + PLDM_GET_TID_RESP_BYTES, 0);
++    uint8_t* responseMsg = response.data();
++    size_t responseMsgSize = sizeof(pldm_msg_hdr) + PLDM_GET_TID_RESP_BYTES;
++    auto responsePtr = reinterpret_cast<struct pldm_msg*>(responseMsg);
++    rc = pldm_recv_at_network(eid, fd, instanceId, &responseMsg,
++                              &responseMsgSize, ctx->net_id);
++    if (rc)
++    {
++        ctx->requester_status = PLDM_BASE_REQUESTER_REQUEST_FAILED;
++        return PLDM_BASE_REQUESTER_RECV_FAIL;
++    }
++    std::cerr << "Pushing Response for GET_TID...\n";
++    pldm_base_push_response(ctx, responsePtr, responseMsgSize);
++    return PLDM_BASE_REQUESTER_SUCCESS;
++}
++
++int processNextRequest(int fd, uint8_t eid, int instanceId,
++                       struct requester_base_context* ctx,
++                       std::vector<uint8_t> requestMsg)
++{
++    switch (ctx->next_command)
++    {
++        case PLDM_GET_TID:
++            return processGetTidRequest(fd, eid, instanceId, ctx, requestMsg);
++        case PLDM_GET_PLDM_TYPES:
++            return PLDM_NEXT_CMD_NOT_SUPPORTED;
++        case PLDM_GET_PLDM_VERSION:
++            return PLDM_NEXT_CMD_NOT_SUPPORTED;
++        case PLDM_GET_PLDM_COMMANDS:
++            return PLDM_NEXT_CMD_NOT_SUPPORTED;
++        default:
++            return PLDM_BASE_REQUESTER_NOT_PLDM_BASE_MSG;
++    }
++    return PLDM_BASE_REQUESTER_SUCCESS;
++}
++
++int performBaseDiscovery(std::string rdeDevice, int fd, int netId, int eid,
++                         int instanceId)
++{
++    int rc = 0;
++    struct requester_base_context* ctx = new requester_base_context();
++    rc = pldm_base_init_context(ctx, rdeDevice.c_str(), netId);
++    if (-1 == rc)
++    {
++        std::cerr
++            << "Error in initializing RDE Requester Context, Return Code: "
++            << rc << "\n";
++        return rc;
++    }
++    std::cerr << "Triggering PLDM Base discovery...\n";
++    rc = pldm_base_start_discovery(ctx);
++    if (-1 == rc)
++    {
++        std::cerr << "Error in triggering PLDM_BASE, Return Code: " << rc
++                  << "\n";
++        return rc;
++    }
++
++    int processCounter = 0;
++
++    while (true)
++    {
++        if (ctx->requester_status == PLDM_BASE_REQUESTER_NO_PENDING_ACTION)
++        {
++            break;
++        }
++        int requestBytes;
++        if (baseCommandRequestSize.find(ctx->next_command) !=
++            baseCommandRequestSize.end())
++        {
++            requestBytes = baseCommandRequestSize[ctx->next_command];
++        }
++        else
++        {
++            requestBytes = PLDM_MAX_REQUEST_BYTES;
++        }
++        std::vector<uint8_t> requestMsg(sizeof(pldm_msg_hdr) + requestBytes);
++        auto request = reinterpret_cast<pldm_msg*>(requestMsg.data());
++        std::cerr << "Getting next request...\n";
++        rc = pldm_base_get_next_request(ctx, instanceId, request);
++        if (rc)
++        {
++            std::cerr << "No more requests to process\n";
++            break;
++        }
++        rc = processNextRequest(fd, eid, instanceId, ctx, requestMsg);
++        if (rc)
++        {
++            // TODO(@harshtya): Remove when all PLDM Base commands supported
++            if (rc == PLDM_NEXT_CMD_NOT_SUPPORTED)
++            {
++                std::cerr << "Supported PLDM Base discovery commands completed!"
++                          << "Gracefully exiting..\n";
++                break;
++            }
++            std::cerr << "Failure in processing request with error code:"
++                      << std::to_string(rc) << "\n";
++            break;
++        }
++        if (processCounter > BASE_REQUEST_RETRIES)
++        {
++            std::cerr
++                << "MCTP setup error, no base discovery request is succeding\n";
++            break;
++        }
++        processCounter++;
++    }
++    return rc;
++}
+diff --git a/rded/helper/discovery/base_discovery.hpp b/rded/helper/discovery/base_discovery.hpp
+new file mode 100644
+index 0000000..256d737
+--- /dev/null
++++ b/rded/helper/discovery/base_discovery.hpp
+@@ -0,0 +1,12 @@
++#include "libpldm/pldm_base_requester.h"
++#include <iostream>
++#include <map>
++#include <vector>
++
++#pragma once
++
++
++extern std::map<uint8_t, int> baseCommandRequestSize;
++
++int performBaseDiscovery(std::string rdeDevice, int fd, int netId, int eid,
++                           int instanceId);
+diff --git a/rded/meson.build b/rded/meson.build
+index 02cb675..a108e76 100644
+--- a/rded/meson.build
++++ b/rded/meson.build
+@@ -1,5 +1,6 @@
+ sources = [
+   'rded.cpp',
++  'helper/discovery/base_discovery.cpp'
+ ]
+ 
+ args = [
+diff --git a/rded/rded.cpp b/rded/rded.cpp
+index 7462d87..4a39907 100644
+--- a/rded/rded.cpp
++++ b/rded/rded.cpp
+@@ -1,4 +1,6 @@
+ #include "common/utils.hpp"
++#include "helper/common.hpp"
++#include "helper/discovery/base_discovery.hpp"
+ 
+ #include <locale.h>
+ #include <signal.h>
+@@ -30,6 +32,9 @@
+ using ChangedPropertiesType = std::vector<std::pair<std::string, DbusVariant>>;
+ 
+ constexpr bool DEBUG_ENABLED = false;
++constexpr uint8_t DEST_EID = 9;
++// TODO(@harshtya): Change instance id to be dynamic
++constexpr uint8_t INSTANCE_ID = 1;
+ 
+ int fd; // MCTP Socket for RDE communication
+ 
+@@ -37,6 +42,26 @@
+ std::map<std::string, std::shared_ptr<sdbusplus::asio::dbus_interface>>
+     dbusIntfMap;
+ 
++int initiateDiscovery(int fd, std::string udevId, int netId,
++                       uint8_t destEid, uint8_t instanceId)
++{
++    int rc;
++
++    // Begin Base Discovery
++    std::cerr << "Initiating PLDM Discovery...\n";
++    rc = performBaseDiscovery(udevId, fd, netId, destEid, instanceId);
++    if (rc)
++    {
++        std::cerr << "Failure in Base Discovery with error code: " << rc
++                  << "\n";
++        return rc;
++    }
++
++    // TODO(@harshtya): Add RDE Negotiate Params discovery
++    // TODO(@harshtya): Add get dictionaries for resource ids
++    return 0;
++}
++
+ int triggerRdeReactor(int fd)
+ {
+     /**
+@@ -110,7 +135,15 @@
+                 int netId = setupOnePort(port, udevid); // MCTP Setup
+                 deviceNetIdMap.insert({udevid, netId});
+ 
+-                // TODO(@harshtya): Initiate PLDM and discovery
++                int rc = initiateDiscovery(fd, udevid, netId, DEST_EID,
++                                            INSTANCE_ID);
++                if (rc)
++                {
++                    std::cerr
++                        << "PLDM/RDE Discovery failed for device: " << port
++                        << ", udev: " << udevid << "\n";
++                    return;
++                }
+ 
+                 std::string objectPath = prefixPath + udevid;
+                 if (DEBUG_ENABLED)

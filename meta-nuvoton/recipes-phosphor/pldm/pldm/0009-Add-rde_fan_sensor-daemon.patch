@@ -1,0 +1,1715 @@
+From 01ac345d03eeb307172d3dc34c828deccf99e5d4 Mon Sep 17 00:00:00 2001
+From: Nikhil Namjoshi <nikhilnamjoshi@google.com>
+Date: Fri, 7 Jul 2023 22:43:07 +0000
+Subject: [PATCH] Add rde_fan_sensor daemon
+
+Add the source code for the rde_fan_sensor daemon.
+The intention of this daemon is to communicate the
+calculated fan pwm values from sensors located on BMC node
+to the RDE node. This is essential in the cases where the fans
+connected to the RDE device are to be driven based on inputs
+from the sensors connected to the BMC.
+This daemon shall be able to identify rde fan sensors
+on a given RDE device and shall create dbus objects for
+phosphor-pid-control to write the fan pwm values to.
+Tested:
+Verified that
+1) the rde_fan_sensor daemon is able to scan
+   fan sensors on a RDE device
+2) is able to create rde fan sensor dbus objects for
+   phosphor-pid-control to write the fan PWM
+3) is able to send fanPWM values to the RDE device
+Patch Tracking Bug: b/290409795
+Upstream info / review: NA
+Upstream-Status: Pending
+Justification:
+The patch depends upon rded design being upstreamed which is still in progress
+(https://gerrit.openbmc.org/c/openbmc/docs/+/61256)
+Change-Id: Ibf2dd84ad93613d62cff95d9e5c77e1763c3b1a1
+Signed-off-by: Nikhil Namjoshi <nikhilnamjoshi@google.com>
+---
+ meson.build                                   |   1 +
+ rde_fan_sensor/RdeFanSensorMain.cpp           | 470 ++++++++++++++++++
+ rde_fan_sensor/RdePwmSensor.cpp               | 255 ++++++++++
+ rde_fan_sensor/RdePwmSensor.hpp               |  60 +++
+ rde_fan_sensor/RdeTachSensor.cpp              |  91 ++++
+ rde_fan_sensor/RdeTachSensor.hpp              |  44 ++
+ rde_fan_sensor/RdeUtils.cpp                   | 119 +++++
+ rde_fan_sensor/RdeUtils.hpp                   | 219 ++++++++
+ rde_fan_sensor/meson.build                    |  59 +++
+ .../service_files/rde_fan_sensor.service      |  16 +
+ test/meson.build                              |   4 +
+ test/rde_utils_test.cpp                       | 230 +++++++++
+ 12 files changed, 1568 insertions(+)
+ create mode 100644 rde_fan_sensor/RdeFanSensorMain.cpp
+ create mode 100644 rde_fan_sensor/RdePwmSensor.cpp
+ create mode 100644 rde_fan_sensor/RdePwmSensor.hpp
+ create mode 100644 rde_fan_sensor/RdeTachSensor.cpp
+ create mode 100644 rde_fan_sensor/RdeTachSensor.hpp
+ create mode 100644 rde_fan_sensor/RdeUtils.cpp
+ create mode 100644 rde_fan_sensor/RdeUtils.hpp
+ create mode 100644 rde_fan_sensor/meson.build
+ create mode 100644 rde_fan_sensor/service_files/rde_fan_sensor.service
+ create mode 100644 test/rde_utils_test.cpp
+
+diff --git a/meson.build b/meson.build
+index 0e94638..b94b78c 100644
+--- a/meson.build
++++ b/meson.build
+@@ -203,6 +203,7 @@ endif
+ 
+ subdir('pldmtool')
+ subdir('rded')
++subdir('rde_fan_sensor')
+ subdir('configurations')
+ 
+ if get_option('utilities').allowed()
+diff --git a/rde_fan_sensor/RdeFanSensorMain.cpp b/rde_fan_sensor/RdeFanSensorMain.cpp
+new file mode 100644
+index 0000000..c9ec4a0
+--- /dev/null
++++ b/rde_fan_sensor/RdeFanSensorMain.cpp
+@@ -0,0 +1,470 @@
++/**
++ * Copyright 2023 Google Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++#include "RdePwmSensor.hpp"
++#include "RdeTachSensor.hpp"
++#include "RdeUtils.hpp"
++#include "nlohmann/json.hpp"
++
++#include <boost/algorithm/string/replace.hpp>
++#include <boost/asio/steady_timer.hpp>
++#include <boost/container/flat_map.hpp>
++#include <boost/container/flat_set.hpp>
++#include <boost/filesystem.hpp>
++#include <boost/url/url.hpp>
++#include <sdbusplus/asio/connection.hpp>
++#include <sdbusplus/asio/object_server.hpp>
++#include <sdbusplus/bus/match.hpp>
++
++#include <array>
++#include <cstdio>
++#include <filesystem>
++#include <fstream>
++#include <functional>
++#include <map>
++#include <memory>
++#include <optional>
++#include <regex>
++#include <string>
++#include <utility>
++#include <variant>
++#include <vector>
++
++/**
++ * @brief Determine the tray id of the tray associated with a Rde device
++ *
++ * @param[in]     trayType  The type of the tray
++ * @param[in,out] trayCountMap  A map that stores tray count against tray type
++ * @param[in]     rdeDeviceId  Rde device id
++ * @param[in,out] rdeIdToTrayIdMap A map for storing rde device id against tray
++ * id
++ *
++ * @return std::string (Tray id)
++ */
++
++static std::string getTrayId(
++    const std::string& trayType,
++    boost::container::flat_map<std::string, int>& trayCountMap,
++    const std::string& rdeDeviceId,
++    boost::container::flat_map<std::string, std::string>& rdeIdToTrayIdMap)
++{
++    std::string trayId = "";
++    int count = 0;
++    if (rdeIdToTrayIdMap.find(rdeDeviceId) == rdeIdToTrayIdMap.end())
++    {
++        if (trayCountMap.find(trayType) == trayCountMap.end())
++        {
++            trayCountMap.emplace(trayType, count);
++        }
++        else
++        {
++            count = trayCountMap[trayType];
++            trayCountMap[trayType] = count + 1;
++        }
++        std::cerr << "Adding entry in trayCountMap " << trayType << ":" << count
++                  << std::endl;
++
++        trayId = trayType + std::to_string(count);
++        // Once a trayId is mapped with rdeDeviceId, the mapping will stay
++        // forever even if the rde device goes down
++        rdeIdToTrayIdMap.emplace(rdeDeviceId, trayId);
++    }
++    else
++    {
++        trayId = rdeIdToTrayIdMap[rdeDeviceId];
++    }
++    return trayId;
++}
++
++/**
++ * @brief Determine the Rde pwm sensors on the Rde device
++ *
++ * @param[in]     dbusConnection  A D-bus bus object to send D-bus requests
++ * @param[in]     sensorCollectionRespJson  A json object storing the sensors
++ collection response from Rde device
++ * @param[in]     trayId  The tray id
++ * @param[in]     rdeDeviceId Rde device id
++ * @param[in]     rdeDevService Name of the service that handles D-bus requests
++ for Rde device
++ * @param[in]     rdeDevObjPath Rde device D-bus object path
++ *
++ * @return std::map<std::string, std::string> (Map that stores sensor Uri
++ against unique sensor id)
++ */
++
++static std::map<std::string, std::string>
++    findRdePwmSensors(sdbusplus::bus_t& dbusConnection,
++                      const nlohmann::json& sensorCollectionRespJson,
++                      const std::string& trayId, const std::string& rdeDeviceId,
++                      std::string& rdeDevService,
++                      const std::string& rdeDevObjPath)
++{
++    std::map<std::string, std::string> rdePwmSensors;
++
++    int sensorsCount = sensorCollectionRespJson["Members@odata.count"];
++
++    std::vector<nlohmann::json> members = sensorCollectionRespJson["Members"];
++    for (int i = 0; i < sensorsCount; i++)
++    {
++        nlohmann::json member = members[i];
++        std::cerr << "Getting member ID" << std::endl;
++        std::string sensorUri = member["@odata.id"];
++
++        std::cerr << "Sending request for " + sensorUri << std::endl;
++        std::string sensorResp = sendRdeDbusRequest(
++            dbusConnection, sensorUri, rdeDeviceId, rdeDevService,
++            rdeDevObjPath, PLDM_RDE_OPERATION_READ, std::string(""));
++        if (isResponseError(sensorResp))
++        {
++            std::cerr << "Unable to get sensor response" << std::endl;
++            continue;
++        }
++
++        nlohmann::json sensorRespJson;
++        try
++        {
++            sensorRespJson = nlohmann::json::parse(sensorResp);
++        }
++        catch (const nlohmann::json::parse_error& e)
++        {
++            std::cerr << "JSON parsing error: " << e.what()
++                      << " while parsing sensor response " << sensorResp
++                      << std::endl;
++            continue;
++        }
++        catch (const std::exception& e)
++        {
++            std::cerr << "Error: " << e.what()
++                      << " while parsing sensor response " << sensorResp
++                      << std::endl;
++            continue;
++        }
++
++        std::string sensorId = sensorRespJson["Id"];
++
++        std::cerr << "Found sensor ID : " << sensorId << std::endl;
++        if (regex_match(sensorId, std::regex(R"(host_fan(\d+)_pwm)")))
++        {
++            rdePwmSensors[sensorId + "_" + trayId] = sensorUri;
++            std::cerr << "Found regex match" << std::endl;
++            std::cerr << "findRdePwmSensors) Found : "
++                      << sensorId + "_" + trayId << std::endl;
++        }
++    }
++    return rdePwmSensors;
++}
++
++/**
++ * @brief Create fan pwm and tach sensors for each pwm sensor present on the Rde
++ * devices
++ *
++ * @param[in,out] trayCountMap  A map that stores tray count against tray type
++ * @param[in,out] rdeIdToTrayIdMap A map for storing rde device id against tray
++ * id
++ * @param[in]     io  An asio io context
++ * @param[in]     objectServer An asio object server
++ * @param[in,out] pwmSensors A map that stores pwm sensor objects against pwm
++ * sensor names
++ * @param[in,out] tachSensors A map that stores tach sensor objects against tach
++ * sensor names
++ * @param[in]     asioConnection An asio connection
++ * @param[in]     dbusConnection  A D-bus object to send D-bus requests
++ * @param[in,out] rdeDevicesChanged A shared pointer to a set that stores the
++ * Rde object paths for the Rde devices that were newly added or removed
++ * @param[in]     retries The retry count for running D-bus query to get the Rde
++ * device
++ *
++ * @return void
++ */
++
++void createSensors(
++    boost::container::flat_map<std::string, int>& trayCountMap,
++    boost::container::flat_map<std::string, std::string>& rdeIdToTrayIdMap,
++    boost::asio::io_context& io, sdbusplus::asio::object_server& objectServer,
++    boost::container::flat_map<std::string, std::unique_ptr<PwmSensor>>&
++        pwmSensors,
++    boost::container::flat_map<std::string, std::unique_ptr<TachSensor>>&
++        tachSensors,
++    std::shared_ptr<sdbusplus::asio::connection>& asioConnection,
++    sdbusplus::bus_t& dbusConnection,
++    const std::shared_ptr<boost::container::flat_set<std::string>>&
++        rdeDevicesChanged,
++    size_t retries = 0)
++{
++    auto getter = std::make_shared<GetRdeDevices>(
++        asioConnection,
++        [&trayCountMap, &rdeIdToTrayIdMap, &io, &objectServer, &pwmSensors,
++         &tachSensors, &asioConnection, &dbusConnection,
++         rdeDevicesChanged](const std::map<std::string, std::string>
++                                rdeDevObjPathsToServiceMap) {
++            bool firstScan = (rdeDevicesChanged == nullptr);
++            for (auto it1 = rdeDevObjPathsToServiceMap.begin();
++                 it1 != rdeDevObjPathsToServiceMap.end(); ++it1)
++            {
++                std::string rdeDevObjPath = it1->first;
++                std::string rdeDevService = it1->second;
++                sdbusplus::message::object_path path(rdeDevObjPath);
++                std::string rdeDeviceId = path.filename();
++
++                // On re-scans only update sensors for newly discovered Rde
++                // devices
++                if (!firstScan && (rdeDevicesChanged->find(rdeDevObjPath) ==
++                                   rdeDevicesChanged->end()))
++                {
++                    continue;
++                }
++
++                std::cerr << "rdeDeviceId : " << rdeDeviceId
++                          << " was changed/updated" << std::endl;
++
++                std::string trayResp = sendRdeDbusRequest(
++                    dbusConnection, "/redfish/v1/Chassis/Tray", rdeDeviceId,
++                    rdeDevService, rdeDevObjPath, PLDM_RDE_OPERATION_READ,
++                    std::string(""));
++
++                if (isResponseError(trayResp))
++                {
++                    std::cerr << "Unable to get tray collection" << std::endl;
++                    continue;
++                }
++
++                nlohmann::json trayRespJson;
++                try
++                {
++                    trayRespJson = nlohmann::json::parse(trayResp);
++                }
++                catch (const nlohmann::json::parse_error& e)
++                {
++                    std::cerr << "JSON parsing error: " << e.what()
++                              << " while parsing tray response " << trayResp
++                              << std::endl;
++                    continue;
++                }
++                catch (const std::exception& e)
++                {
++                    std::cerr << "Error: " << e.what()
++                              << " while parsing tray response " << trayResp
++                              << std::endl;
++                    continue;
++                }
++                std::string trayId =
++                    getTrayId(trayRespJson["Model"], trayCountMap, rdeDeviceId,
++                              rdeIdToTrayIdMap);
++
++                // Get Sensor Collection
++                std::string sensorCollectionResp = sendRdeDbusRequest(
++                    dbusConnection, "/redfish/v1/Chassis/Tray/Sensors",
++                    rdeDeviceId, rdeDevService, rdeDevObjPath,
++                    PLDM_RDE_OPERATION_READ, std::string(""));
++                if (isResponseError(sensorCollectionResp))
++                {
++                    std::cerr << "Unable to get sensor collection" << std::endl;
++                    return;
++                }
++                nlohmann::json sensorCollectionRespJson;
++                try
++                {
++                    sensorCollectionRespJson =
++                        nlohmann::json::parse(sensorCollectionResp);
++                }
++                catch (const nlohmann::json::parse_error& e)
++                {
++                    std::cerr << "JSON parsing error: " << e.what()
++                              << " while parsing sensor collection response "
++                              << sensorCollectionResp << std::endl;
++                    continue;
++                }
++                catch (const std::exception& e)
++                {
++                    std::cerr << "Error: " << e.what()
++                              << " while parsing sensor collection response "
++                              << sensorCollectionResp << std::endl;
++                    continue;
++                }
++
++                std::map<std::string, std::string> rdePwmSensors =
++                    findRdePwmSensors(dbusConnection, sensorCollectionRespJson,
++                                      trayId, rdeDeviceId, rdeDevService,
++                                      rdeDevObjPath);
++                for (auto it2 = rdePwmSensors.begin();
++                     it2 != rdePwmSensors.end(); ++it2)
++                {
++                    std::string fanPwmName = it2->first;
++                    std::cerr << "Update sensor signal request received for : "
++                              << fanPwmName << std::endl;
++
++                    if ((pwmSensors.count(fanPwmName) == 0))
++                    {
++                        std::cerr
++                            << "Rde sensor found in config : " << fanPwmName
++                            << std::endl;
++                        pwmSensors[fanPwmName] = std::make_unique<PwmSensor>(
++                            fanPwmName, rdePwmSensors[fanPwmName],
++                            rdeDevObjPath, rdeDevService, rdeDeviceId, io,
++                            asioConnection, dbusConnection, objectServer, true);
++
++                        // Create dummy tach sensors with default 0 RPM (one for
++                        // each pwm sensor) to make phosphor-pid-control to skip
++                        // fan loop (b/278600144)
++                        std::string fanTachName = fanPwmName;
++                        int position = fanTachName.find("pwm");
++                        fanTachName.replace(position, 3, "tach");
++                        tachSensors[fanTachName] = std::make_unique<TachSensor>(
++                            fanTachName, rdeDevObjPath, asioConnection,
++                            objectServer, true);
++                    }
++                }
++            }
++            // Clear rdeDevicesChanged container since all the changed rde
++            // devices have been processed
++            if (!firstScan)
++            {
++                rdeDevicesChanged->clear();
++            }
++        });
++    getter->getRdeDevices(retries);
++}
++
++int main()
++{
++    // TODO Nikhil : Remove this later once b/283151098 is addressed
++    // We are allowing rded daemon to be ready after initializing miniBMCs
++    sleep(180);
++    boost::asio::io_context io;
++
++    auto systemBus = std::make_shared<sdbusplus::asio::connection>(io);
++    sdbusplus::asio::object_server objectServer(systemBus, true);
++    sdbusplus::bus_t& dbusConnection =
++        static_cast<sdbusplus::bus_t&>(*systemBus);
++
++    objectServer.add_manager("/xyz/openbmc_project/sensors");
++    objectServer.add_manager("/xyz/openbmc_project/control");
++    objectServer.add_manager("/xyz/openbmc_project/inventory");
++    systemBus->request_name("xyz.openbmc_project.RdeFanSensor");
++
++    boost::container::flat_map<std::string, int> trayCountMap;
++    // Once a trayId is mapped with rdeDeviceId, the mapping will stay forever
++    // even if the rde device goes down. This is because rdeDeviceId for a given
++    // RDE device will stay the same at runtime.
++    boost::container::flat_map<std::string, std::string> rdeIdToTrayIdMap;
++    boost::container::flat_map<std::string, std::unique_ptr<PwmSensor>>
++        pwmSensors;
++    boost::container::flat_map<std::string, std::unique_ptr<TachSensor>>
++        tachSensors;
++    auto rdeDevicesChanged =
++        std::make_shared<boost::container::flat_set<std::string>>();
++
++    boost::asio::post(io, [&]() {
++        createSensors(trayCountMap, rdeIdToTrayIdMap, io, objectServer,
++                      pwmSensors, tachSensors, systemBus, dbusConnection,
++                      nullptr);
++    });
++
++    boost::asio::steady_timer filterTimer(io);
++    std::function<void(sdbusplus::message_t&)> rdeDeviceDetectionHandler =
++        [&](sdbusplus::message_t& message) {
++            if (message.is_method_error())
++            {
++                std::cerr << "callback method error\n";
++                return;
++            }
++            std::cerr << "Inserting " << message.get_path()
++                      << " in rdeDevicesChanged" << std::endl;
++            rdeDevicesChanged->insert(message.get_path());
++            // this implicitly cancels the timer
++            filterTimer.expires_after(std::chrono::seconds(1));
++
++            filterTimer.async_wait([&](const boost::system::error_code& ec) {
++                if (ec == boost::asio::error::operation_aborted)
++                {
++                    /* we were canceled*/
++                    return;
++                }
++                if (ec)
++                {
++                    std::cerr << "timer error\n";
++                    return;
++                }
++                createSensors(trayCountMap, rdeIdToTrayIdMap, io, objectServer,
++                              pwmSensors, tachSensors, systemBus,
++                              dbusConnection, rdeDevicesChanged, 5);
++            });
++        };
++
++    std::function<void(sdbusplus::message_t&)> rdeDeviceRemovalHandler =
++        [&](sdbusplus::message_t& message) {
++            if (message.is_method_error())
++            {
++                std::cerr << "callback method error\n";
++                return;
++            }
++            std::cerr << "Removing " << message.get_path() << " from pwmSensors"
++                      << std::endl;
++            sdbusplus::message::object_path changedObject;
++            std::vector<std::string> interfacesRemoved;
++            message.read(changedObject, interfacesRemoved);
++            std::string removedObjectPath = std::string(changedObject);
++
++            auto intfIt =
++                std::find(interfacesRemoved.begin(), interfacesRemoved.end(),
++                          rdeDeviceInterface);
++            if (intfIt != interfacesRemoved.end())
++            {
++                std::cerr << "Need to remove " << removedObjectPath
++                          << " since RDE device got removed" << std::endl;
++                // When RDE device is removed, delete the corresponding pwm and
++                // tach sensors created for the device
++                auto it1 = pwmSensors.begin();
++                while (it1 != pwmSensors.end())
++                {
++                    std::string& pwmObjPath =
++                        it1->second->getRdeDeviceObjPath();
++                    std::cerr << "pwmObjPath : " << pwmObjPath << std::endl;
++                    if (pwmObjPath == removedObjectPath)
++                    {
++                        std::cerr << "Removed " << pwmObjPath << std::endl;
++                        it1 = pwmSensors.erase(it1);
++                        break;
++                    }
++                    it1++;
++                }
++
++                auto it2 = tachSensors.begin();
++                while (it2 != tachSensors.end())
++                {
++                    std::string& tachObjPath =
++                        it2->second->getRdeDeviceObjPath();
++                    std::cerr << "tachObjPath : " << tachObjPath << std::endl;
++                    if (tachObjPath == removedObjectPath)
++                    {
++                        std::cerr << "Removed " << tachObjPath << std::endl;
++                        it2 = tachSensors.erase(it2);
++                        break;
++                    }
++                    it2++;
++                }
++            }
++        };
++
++    std::vector<std::unique_ptr<sdbusplus::bus::match_t>>
++        rdeDeviceDetectionMatches = setupRdeDeviceDetectionMatches(
++            dbusConnection, rdeDeviceDetectionHandler);
++
++    std::unique_ptr<sdbusplus::bus::match_t> rdeDeviceRemovalMatche =
++        setupRdeDeviceRemovalMatches(dbusConnection, rdeDeviceRemovalHandler);
++
++    io.run();
++    return 0;
++}
+diff --git a/rde_fan_sensor/RdePwmSensor.cpp b/rde_fan_sensor/RdePwmSensor.cpp
+new file mode 100644
+index 0000000..5f52e99
+--- /dev/null
++++ b/rde_fan_sensor/RdePwmSensor.cpp
+@@ -0,0 +1,255 @@
++/**
++ * Copyright 2023 Google Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include "RdePwmSensor.hpp"
++
++#include <boost/asio/wait_traits.hpp>
++
++#include <fstream>
++#include <functional>
++#include <iostream>
++#include <stdexcept>
++#include <string>
++
++static constexpr double pwmMax = 255.0;
++static constexpr double targetIfaceMax = pwmMax;
++static constexpr int fanPWMTimeInterval = 120;
++
++PwmSensor::PwmSensor(const std::string& name, const std::string& rdeSensorUri,
++                     const std::string& rdeDevObjPath,
++                     const std::string& rdeDevService,
++                     const std::string& rdeDeviceId,
++                     boost::asio::io_context& io,
++                     std::shared_ptr<sdbusplus::asio::connection>& conn,
++                     sdbusplus::bus_t& dbusConn,
++                     sdbusplus::asio::object_server& objectServer,
++                     bool isValueMutable) :
++    io(io),
++    conn(conn), dbusConn(dbusConn), objectServer(objectServer),
++    timer(io, boost::asio::chrono::seconds(fanPWMTimeInterval)), name(name),
++    rdeSensorUri(rdeSensorUri), rdeDevObjPath(rdeDevObjPath),
++    rdeDevService(rdeDevService), rdeDeviceId(rdeDeviceId), pwmValue(0)
++{
++    sensorInterface = objectServer.add_interface(
++        "/xyz/openbmc_project/sensors/fan_pwm/" + name,
++        "xyz.openbmc_project.Sensor.Value");
++
++    double fValue = 100.0 * (static_cast<double>(pwmValue) / pwmMax);
++    sensorInterface->register_property(
++        "Value", fValue,
++        [this](const double& req, double& resp) {
++            if (!std::isfinite(req))
++            {
++                // Reject attempted change, if to NaN or other non-numeric
++                return -1;
++            }
++            std::cerr << "inside Sensor set" << std::endl;
++            if (req > 100.0 || req < 0.0)
++            {
++                throw std::runtime_error("Value out of range");
++                return -1;
++            }
++
++            double reqValue = (req / 100.0) * pwmMax;
++            double respValue = (resp / 100.0) * pwmMax;
++            auto reqInt = static_cast<uint64_t>(std::round(reqValue));
++            auto respInt = static_cast<uint64_t>(std::round(respValue));
++            // Avoid floating-point equality, compare as integers
++            if (reqInt == respInt)
++            {
++                return 1;
++            }
++
++            this->pwmValue = reqInt;
++            resp = req;
++
++            controlInterface->signal_property("Target");
++
++            return 1;
++        },
++        [this](double& curVal) {
++            std::cerr << "inside Sensor get" << std::endl;
++            double currScaled = (curVal / 100.0) * pwmMax;
++            uint64_t currInt = static_cast<uint64_t>(std::round(currScaled));
++
++            uint64_t pwmVal = this->pwmValue;
++            // Avoid floating-point equality, compare as integers
++            if (currInt != pwmVal)
++            {
++                std::cerr << "Inside RDE Sensor Get Callback. curVal : "
++                          << curVal << " pwmValue : " << pwmVal << std::endl;
++                double getScaled =
++                    100.0 * (static_cast<double>(pwmVal) / pwmMax);
++                curVal = getScaled;
++                controlInterface->signal_property("Target");
++                sensorInterface->signal_property("Value");
++            }
++            return curVal;
++        });
++
++    // pwm sensor interface unit is in percentage
++    sensorInterface->register_property("MaxValue", static_cast<double>(100));
++    sensorInterface->register_property("MinValue", static_cast<double>(0));
++    sensorInterface->register_property("Unit", unitPercent);
++
++    controlInterface = objectServer.add_interface(
++        "/xyz/openbmc_project/control/fanpwm/" + name,
++        "xyz.openbmc_project.Control.FanPwm");
++    controlInterface->register_property(
++        "Target", static_cast<uint64_t>(pwmValue),
++        [this](const uint64_t& req, uint64_t& resp) {
++            std::cerr << "inside Control set " << req
++                      << " Resp Value : " << resp
++                      << " pwmValue : " << this->pwmValue << std::endl;
++
++            if (req > static_cast<uint64_t>(targetIfaceMax))
++            {
++                throw std::runtime_error("Value out of range");
++                return -1;
++            }
++            if (req == resp)
++            {
++                return 1;
++            }
++            auto scaledValue = static_cast<double>(req) / targetIfaceMax;
++            auto roundValue = std::round(scaledValue * pwmMax);
++            uint64_t pwmVal = static_cast<uint64_t>(roundValue);
++            this->pwmValue = pwmVal;
++
++            // Trigger RDE patch operation from here
++            resp = req;
++            double pwmDutyCycle =
++                (static_cast<double>(pwmVal) / pwmMax) * 100.0;
++            std::string pwmPatchStr =
++                "{\"Reading\":" + std::to_string(pwmDutyCycle) + "}";
++            std::cerr << "Sending fanPWMDuty : " << pwmDutyCycle
++                      << " for sensor : " << this->rdeSensorUri
++                      << " on device : " << this->rdeDeviceId << std::endl;
++            this->io.post([&, pwmPatchStr{pwmPatchStr}]() {
++                std::string resp = sendRdeDbusRequest(
++                    this->dbusConn, this->rdeSensorUri, this->rdeDeviceId,
++                    this->rdeDevService, this->rdeDevObjPath,
++                    PLDM_RDE_OPERATION_UPDATE, pwmPatchStr);
++                if (isResponseError(resp))
++                {
++                    std::cerr << "Received dbus error response while patch pwm"
++                              << std::endl;
++                }
++            });
++
++            sensorInterface->signal_property("Value");
++
++            return 1;
++        },
++        [this](uint64_t& curVal) {
++            std::cerr << "inside Control get" << std::endl;
++            auto scaledValue = static_cast<double>(this->pwmValue) / pwmMax;
++            auto roundValue = std::round(scaledValue * targetIfaceMax);
++            auto value = static_cast<uint64_t>(roundValue);
++            if (curVal != value)
++            {
++                curVal = value;
++                controlInterface->signal_property("Target");
++                sensorInterface->signal_property("Value");
++            }
++            return curVal;
++        });
++
++    sensorInterface->initialize();
++    controlInterface->initialize();
++
++    /*
++       By design, phosphor-pid-conrol only dumps fanPWM to dbus if the value
++       is different from the previous one to avoid unnecessary dbus calls and so
++       accordingly the rde_fan_sensor daemon sends it to the RDE device. However
++       if the RDE device does not recieve a value, it may think that BMC<->RDE
++       communication is broken. So setup a  timer to send fanPWM value
++       periodically. The timer feature can be removed once, b/277832479 is
++       addressed in phosphor-pid-control
++    */
++
++    sendFanPWMFunc = [&](const boost::system::error_code& ec) {
++        if (ec == boost::asio::error::operation_aborted)
++        {
++            /* we were canceled*/
++            std::cerr << "sendFanPWM timer is being cancelled" << std::endl;
++            return;
++        }
++        if (ec)
++        {
++            std::cerr << "sendFanPWM timer error" << std::endl;
++            return;
++        }
++        double pwmDutyCycle =
++            (static_cast<double>(this->pwmValue) / pwmMax) * 100.0;
++        std::string pwmPatchStr =
++            "{\"Reading\":" + std::to_string(pwmDutyCycle) + "}";
++        std::cerr << "Sending fanPWMDuty after 120 seconds in a timed event : "
++                  << pwmDutyCycle << " for sensor : " << this->rdeSensorUri
++                  << " on device : " << this->rdeDeviceId << std::endl;
++        std::string resp = sendRdeDbusRequest(
++            this->dbusConn, this->rdeSensorUri, this->rdeDeviceId,
++            this->rdeDevService, this->rdeDevObjPath, PLDM_RDE_OPERATION_UPDATE,
++            pwmPatchStr);
++        if (isResponseError(resp))
++        {
++            std::cerr << "Received dbus error response while patch pwm"
++                      << std::endl;
++        }
++        this->timer.expires_after(
++            boost::asio::chrono::seconds(fanPWMTimeInterval));
++        this->timer.async_wait(this->sendFanPWMFunc);
++    };
++
++    io.post([&]() {
++        this->timer.async_wait(this->sendFanPWMFunc);
++    });
++
++    if (isValueMutable)
++    {
++        valueMutabilityInterface =
++            std::make_shared<sdbusplus::asio::dbus_interface>(
++                conn, sensorInterface->get_object_path(),
++                valueMutabilityInterfaceName);
++        valueMutabilityInterface->register_property("Mutable", true);
++        if (!valueMutabilityInterface->initialize())
++        {
++            std::cerr
++                << "error initializing sensor value mutability interface\n";
++            valueMutabilityInterface = nullptr;
++        }
++    }
++
++    // TODO Nikhil : Check if we need to associate rde pwm/tach sensors with
++    // chassis ?
++}
++PwmSensor::~PwmSensor()
++{
++    objectServer.remove_interface(sensorInterface);
++    objectServer.remove_interface(controlInterface);
++    objectServer.remove_interface(valueMutabilityInterface);
++}
++
++/**
++ * @brief Get the Rde device object path for the pwm sensor
++ *
++ * @return std::string (Rde device object path)
++ */
++
++std::string& PwmSensor::getRdeDeviceObjPath()
++{
++    return rdeDevObjPath;
++}
+diff --git a/rde_fan_sensor/RdePwmSensor.hpp b/rde_fan_sensor/RdePwmSensor.hpp
+new file mode 100644
+index 0000000..46d5411
+--- /dev/null
++++ b/rde_fan_sensor/RdePwmSensor.hpp
+@@ -0,0 +1,60 @@
++/**
++ * Copyright 2023 Google Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++#pragma once
++
++#include "RdeUtils.hpp"
++
++#include <boost/asio.hpp>
++#include <boost/asio/steady_timer.hpp>
++#include <boost/bind/bind.hpp>
++#include <sdbusplus/asio/object_server.hpp>
++
++#include <functional>
++#include <memory>
++#include <string>
++
++class PwmSensor
++{
++  public:
++    PwmSensor(const std::string& name, const std::string& rdeSensorUri,
++              const std::string& rdeDevObjPath,
++              const std::string& rdeDevService, const std::string& rdeDeviceId,
++              boost::asio::io_context& io,
++              std::shared_ptr<sdbusplus::asio::connection>& conn,
++              sdbusplus::bus_t& dbusConn,
++              sdbusplus::asio::object_server& objectServer,
++              bool isValueMutable = false);
++    ~PwmSensor();
++
++    std::string& getRdeDeviceObjPath();
++    std::function<void(const boost::system::error_code&)> sendFanPWMFunc;
++
++  private:
++    boost::asio::io_context& io;
++    std::shared_ptr<sdbusplus::asio::connection>& conn;
++    sdbusplus::bus_t& dbusConn;
++    sdbusplus::asio::object_server& objectServer;
++    boost::asio::steady_timer timer;
++    std::string name;
++    std::string rdeSensorUri;
++    std::string rdeDevObjPath;
++    std::string rdeDevService;
++    std::string rdeDeviceId;
++    std::shared_ptr<sdbusplus::asio::dbus_interface> sensorInterface;
++    std::shared_ptr<sdbusplus::asio::dbus_interface> controlInterface;
++    std::shared_ptr<sdbusplus::asio::dbus_interface> valueMutabilityInterface;
++    uint64_t pwmValue;
++};
+diff --git a/rde_fan_sensor/RdeTachSensor.cpp b/rde_fan_sensor/RdeTachSensor.cpp
+new file mode 100644
+index 0000000..432a3d6
+--- /dev/null
++++ b/rde_fan_sensor/RdeTachSensor.cpp
+@@ -0,0 +1,91 @@
++/**
++ * Copyright 2023 Google Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++#include "RdeTachSensor.hpp"
++#include "RdeUtils.hpp"
++
++#include <unistd.h>
++
++#include <boost/asio/read_until.hpp>
++#include <sdbusplus/asio/connection.hpp>
++#include <sdbusplus/asio/object_server.hpp>
++
++#include <charconv>
++#include <fstream>
++#include <iostream>
++#include <istream>
++#include <limits>
++#include <memory>
++#include <optional>
++#include <stdexcept>
++#include <string>
++#include <utility>
++#include <vector>
++
++TachSensor::TachSensor(const std::string& name,
++                       const std::string& rdeDevObjPath,
++                       std::shared_ptr<sdbusplus::asio::connection>& conn,
++                       sdbusplus::asio::object_server& objectServer,
++                       bool isValueMutable) :
++    objectServer(objectServer),
++    name(name), rdeDevObjPath(rdeDevObjPath)
++{
++    sensorInterface = objectServer.add_interface(
++        "/xyz/openbmc_project/sensors/fan_tach/" + name,
++        "xyz.openbmc_project.Sensor.Value");
++
++    sensorInterface->register_property("Value", 0);
++    sensorInterface->register_property("MaxValue", 25000);
++    sensorInterface->register_property("MinValue", 0);
++    sensorInterface->register_property(
++        "Unit", std::string("xyz.openbmc_project.Sensor.Value.Unit.RPMS"));
++
++    sensorInterface->initialize();
++
++    if (isValueMutable)
++    {
++        valueMutabilityInterface =
++            std::make_shared<sdbusplus::asio::dbus_interface>(
++                conn, sensorInterface->get_object_path(),
++                valueMutabilityInterfaceName);
++        valueMutabilityInterface->register_property("Mutable", true);
++        if (!valueMutabilityInterface->initialize())
++        {
++            std::cerr
++                << "error initializing sensor value mutability interface\n";
++            valueMutabilityInterface = nullptr;
++        }
++    }
++
++    // TODO Nikhil : Check if we need to associate rde pwm/tach sensors with
++    // chassis ?
++}
++
++TachSensor::~TachSensor()
++{
++    objectServer.remove_interface(sensorInterface);
++    objectServer.remove_interface(valueMutabilityInterface);
++}
++
++/**
++ * @brief Get the Rde device object path for the tach sensor
++ *
++ * @return std::string (Rde device object path)
++ */
++
++std::string& TachSensor::getRdeDeviceObjPath()
++{
++    return rdeDevObjPath;
++}
+diff --git a/rde_fan_sensor/RdeTachSensor.hpp b/rde_fan_sensor/RdeTachSensor.hpp
+new file mode 100644
+index 0000000..4e7c729
+--- /dev/null
++++ b/rde_fan_sensor/RdeTachSensor.hpp
+@@ -0,0 +1,44 @@
++/**
++ * Copyright 2023 Google Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++#pragma once
++#include <boost/asio/random_access_file.hpp>
++#include <boost/container/flat_map.hpp>
++#include <boost/container/flat_set.hpp>
++#include <sdbusplus/asio/object_server.hpp>
++
++#include <memory>
++#include <optional>
++#include <string>
++#include <utility>
++#include <vector>
++
++class TachSensor
++{
++  public:
++    TachSensor(const std::string& name, const std::string& rdeDevObjPath,
++               std::shared_ptr<sdbusplus::asio::connection>& conn,
++               sdbusplus::asio::object_server& objectServer,
++               bool isValueMutable);
++    ~TachSensor();
++    std::string& getRdeDeviceObjPath();
++
++  private:
++    sdbusplus::asio::object_server& objectServer;
++    std::string name;
++    std::string rdeDevObjPath;
++    std::shared_ptr<sdbusplus::asio::dbus_interface> sensorInterface;
++    std::shared_ptr<sdbusplus::asio::dbus_interface> valueMutabilityInterface;
++};
+diff --git a/rde_fan_sensor/RdeUtils.cpp b/rde_fan_sensor/RdeUtils.cpp
+new file mode 100644
+index 0000000..0ddb022
+--- /dev/null
++++ b/rde_fan_sensor/RdeUtils.cpp
+@@ -0,0 +1,119 @@
++/**
++ * Copyright 2023 Google Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++#include "RdeUtils.hpp"
++
++namespace fs = std::filesystem;
++
++/**
++ * @brief Generate a random unique integer
++ *
++ * @return int (Random unique integer)
++ */
++
++static inline int generateRandomInt()
++{
++    std::random_device randomDevice;
++    std::mt19937 generator(randomDevice());
++    std::uniform_int_distribution<> distribution(1, 9999);
++    int randomNumber = distribution(generator);
++    return randomNumber;
++}
++
++bool isResponseError(const std::string& resp)
++{
++    if (resp == "ERROR")
++    {
++        return true;
++    }
++    return false;
++}
++
++void createAssociation(
++    std::shared_ptr<sdbusplus::asio::dbus_interface>& association,
++    const std::string& path)
++{
++    std::cerr << "Inside createAssociation" << std::endl;
++    if (association)
++    {
++        fs::path p(path);
++
++        std::vector<Association> associations;
++        associations.emplace_back("chassis", "all_sensors",
++                                  p.parent_path().string());
++        association->register_property("Associations", associations);
++        association->initialize();
++        std::cerr << "Done createAssociation" << std::endl;
++    }
++}
++
++std::vector<std::unique_ptr<sdbusplus::bus::match_t>>
++    setupRdeDeviceDetectionMatches(
++        sdbusplus::bus_t& bus,
++        const std::function<void(sdbusplus::message_t&)>& handler)
++{
++    std::vector<std::unique_ptr<sdbusplus::bus::match_t>> matches;
++    auto match = std::make_unique<sdbusplus::bus::match_t>(
++        bus,
++        sdbusplus::bus::match::rules::propertiesChangedNamespace(
++            rdeDevicesPath, rdeDeviceInterface),
++        handler);
++    matches.emplace_back(std::move(match));
++
++    return matches;
++}
++
++std::unique_ptr<sdbusplus::bus::match_t> setupRdeDeviceRemovalMatches(
++    sdbusplus::bus_t& bus,
++    const std::function<void(sdbusplus::message_t&)>& handler)
++{
++    std::unique_ptr<sdbusplus::bus::match_t> match =
++        std::make_unique<sdbusplus::bus::match_t>(
++            bus,
++            sdbusplus::bus::match::rules::interfacesRemoved() +
++                sdbusplus::bus::match::rules::argNpath(
++                    0, std::string(rdeDevicesPath) + "/"),
++            handler);
++    return match;
++}
++
++std::string sendRdeDbusRequest(sdbusplus::bus_t& dbusConnection,
++                               const std::string& uri,
++                               const std::string& rdeDeviceId,
++                               const std::string& rdeServiceName,
++                               const std::string& rdeObjPath,
++                               pldm_rde_operation_type operationType,
++                               const std::string& requestPayload)
++{
++    std::string resp;
++    sdbusplus::message_t rdeRequest = dbusConnection.new_method_call(
++        rdeServiceName.c_str(), rdeObjPath.c_str(), rdeDeviceInterface,
++        "execute_rde");
++    rdeRequest.append(generateRandomInt(), (uint8_t)operationType, uri.c_str(),
++                      rdeDeviceId.c_str(), requestPayload.c_str());
++    try
++    {
++        sdbusplus::message_t reply = dbusConnection.call(rdeRequest);
++        reply.read(resp);
++    }
++    catch (const sdbusplus::exception_t& e)
++    {
++        std::cerr << "While calling execute_rde on service:" << rdeServiceName
++                  << " exception name:" << e.name()
++                  << "and description:" << e.description() << " was thrown\n";
++        return "ERROR";
++    }
++    return resp;
++}
+diff --git a/rde_fan_sensor/RdeUtils.hpp b/rde_fan_sensor/RdeUtils.hpp
+new file mode 100644
+index 0000000..8b2e3b5
+--- /dev/null
++++ b/rde_fan_sensor/RdeUtils.hpp
+@@ -0,0 +1,219 @@
++/**
++ * Copyright 2023 Google Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++#pragma once
++#include "libpldm/pldm_rde.h"
++
++#include <boost/algorithm/string/replace.hpp>
++#include <boost/asio/steady_timer.hpp>
++#include <boost/container/flat_map.hpp>
++#include <sdbusplus/asio/connection.hpp>
++#include <sdbusplus/asio/object_server.hpp>
++#include <sdbusplus/message/types.hpp>
++
++#include <filesystem>
++#include <functional>
++#include <iostream>
++#include <memory>
++#include <optional>
++#include <random>
++#include <regex>
++#include <span>
++#include <string>
++#include <tuple>
++#include <utility>
++#include <variant>
++#include <vector>
++
++const constexpr char* rdeDevicesPath = "/xyz/openbmc_project/rde_devices";
++const constexpr char* unitPercent =
++    "xyz.openbmc_project.Sensor.Value.Unit.Percent";
++const constexpr char* valueMutabilityInterfaceName =
++    "xyz.openbmc_project.Sensor.ValueMutability";
++const constexpr char* rdeDeviceInterface = "xyz.openbmc_project.RdeDevice";
++
++using ObjPathToServiceMapType = std::map<std::string, std::string>;
++using GetSubTreeType = std::vector<
++    std::pair<std::string,
++              std::vector<std::pair<std::string, std::vector<std::string>>>>>;
++using Association = std::tuple<std::string, std::string, std::string>;
++
++namespace mapper
++{
++constexpr const char* busName = "xyz.openbmc_project.ObjectMapper";
++constexpr const char* path = "/xyz/openbmc_project/object_mapper";
++constexpr const char* interface = "xyz.openbmc_project.ObjectMapper";
++constexpr const char* subtree = "GetSubTree";
++} // namespace mapper
++
++namespace association
++{
++const static constexpr char* interface =
++    "xyz.openbmc_project.Association.Definitions";
++} // namespace association
++
++/**
++ * @brief Check if it is an error response
++ *
++ * @param[in] resp A json object storing the response
++ *
++ * @return bool (True for error response and false otherwise)
++ */
++
++bool isResponseError(const std::string& resp);
++
++/**
++ * @brief Create association between D-bus objects
++ *
++ * @param[in] association Pointer to an associations interface
++ * @param[in] path A D-bus object path
++ *
++ * @return void
++ */
++
++void createAssociation(
++    std::shared_ptr<sdbusplus::asio::dbus_interface>& association,
++    const std::string& path);
++
++/**
++ * @brief Setup a matcher to detect Rde device D-bus object discovery
++ *
++ * @param[in] bus A D-bus bus object
++ * @param[in] handler A callback function to be called when match is found
++ *
++ * @return std::vector<std::unique_ptr<sdbusplus::bus::match_t>> (Match object)
++ */
++
++std::vector<std::unique_ptr<sdbusplus::bus::match_t>>
++    setupRdeDeviceDetectionMatches(
++        sdbusplus::bus_t& bus,
++        const std::function<void(sdbusplus::message_t&)>& handler);
++
++/**
++ * @brief Setup a matcher to detect Rde device D-bus object removal
++ *
++ * @param[in] bus A D-bus bus object
++ * @param[in] handler A callback function to be called when match is found
++ *
++ * @return std::vector<std::unique_ptr<sdbusplus::bus::match_t>> (Match object)
++ */
++
++std::unique_ptr<sdbusplus::bus::match_t> setupRdeDeviceRemovalMatches(
++    sdbusplus::bus_t& bus,
++    const std::function<void(sdbusplus::message_t&)>& handler);
++
++/**
++ * @brief Send Redfish queries to Rde device
++ *
++ * @param[in] dbusConnection A D-bus bus object to send D-bus requests
++ * @param[in] uri A Redfish resource uri to query
++ * @param[in] rdeDeviceId Rde device id
++ * @param[in] rdeServiceName Name of the service that handles D-bus requests for
++ * Rde device
++ * @param[in] rdeObjPath Rde device D-bus object path
++ * @param[in] operationType Pldm operation type
++ * @param[in] requestPayload Request payload to send
++ *
++ * @return std::string (Response for the Redfish query)
++ */
++
++std::string sendRdeDbusRequest(sdbusplus::bus_t& dbusConnection,
++                               const std::string& uri,
++                               const std::string& rdeDeviceId,
++                               const std::string& rdeServiceName,
++                               const std::string& rdeObjPath,
++                               pldm_rde_operation_type operationType,
++                               const std::string& requestPayload);
++
++/** @struct GetRdeDevices
++ *
++ *  Container that stores data and method needed to get the Rde device object
++ * paths
++ */
++struct GetRdeDevices : std::enable_shared_from_this<GetRdeDevices>
++{
++    GetRdeDevices(std::shared_ptr<sdbusplus::asio::connection> connection,
++                  std::function<void(ObjPathToServiceMapType& serviceMap)>&&
++                      callbackFunc) :
++        dbusConnection(std::move(connection)),
++        callback(std::move(callbackFunc))
++    {}
++
++    void getRdeDevices(size_t retries = 0)
++    {
++        if (retries > 5)
++        {
++            retries = 5;
++        }
++
++        std::cerr << "Inside getRdeDevices " << std::endl;
++        std::vector<std::string> interfaces = {rdeDeviceInterface};
++        std::shared_ptr<GetRdeDevices> self = shared_from_this();
++        dbusConnection->async_method_call(
++            [self, retries](const boost::system::error_code& ec,
++                            const GetSubTreeType& subtree) {
++                if (ec)
++                {
++                    std::cerr << "Error in the mapper call. ec : " << ec
++                              << std::endl;
++                    if (retries == 0U)
++                    {
++                        return;
++                    }
++                    auto timer = std::make_shared<boost::asio::steady_timer>(
++                        self->dbusConnection->get_io_context());
++                    timer->expires_after(std::chrono::seconds(10));
++                    timer->async_wait([self, timer, retries](
++                                          const boost::system::error_code& ec) {
++                        std::cerr << "Inside timer callback" << std::endl;
++                        if (ec)
++                        {
++                            std::cerr << "Timer error" << std::endl;
++                            return;
++                        }
++                        self->getRdeDevices(retries - 1);
++                    });
++
++                    return;
++                }
++
++                std::cerr << "Out of dbus error" << std::endl;
++                for (const auto& [path, objDict] : subtree)
++                {
++                    if (objDict.empty())
++                    {
++                        return;
++                    }
++
++                    const std::string& owner = objDict.begin()->first;
++                    std::cerr << " Got path : " << path << " with owner "
++                              << owner << std::endl;
++                    self->rdeDevObjPathsToServiceMap[path] =
++                        objDict.begin()->first;
++                }
++            },
++            mapper::busName, mapper::path, mapper::interface, mapper::subtree,
++            "/", 0, interfaces);
++    }
++
++    ~GetRdeDevices()
++    {
++        callback(rdeDevObjPathsToServiceMap);
++    }
++
++    std::shared_ptr<sdbusplus::asio::connection> dbusConnection;
++    std::function<void(ObjPathToServiceMapType& serviceMap)> callback;
++    ObjPathToServiceMapType rdeDevObjPathsToServiceMap;
++};
+diff --git a/rde_fan_sensor/meson.build b/rde_fan_sensor/meson.build
+new file mode 100644
+index 0000000..de558d7
+--- /dev/null
++++ b/rde_fan_sensor/meson.build
+@@ -0,0 +1,59 @@
++sources = [
++  'RdePwmSensor.cpp',
++  'RdeTachSensor.cpp',
++  'RdeUtils.cpp',
++  'RdeFanSensorMain.cpp'
++]
++headers = ['.']
++requester_inc = include_directories(headers)
++req_src = declare_dependency(
++          include_directories:requester_inc)
++
++boost = dependency('boost',version : '>=1.80.0', required : false, include_type: 'system')
++if not boost.found()
++  boost = subproject('boost', required: true).get_variable('boost_dep')
++  boost = boost.as_system('system')
++endif
++
++deps = [
++  libpldm_dep,
++  libbej_dep,
++  boost,
++  nlohmann_json,
++  phosphor_dbus_interfaces,
++  libpldmutils,
++  sdbusplus,
++  sdeventplus,
++  stdplus,
++  req_src,
++]
++
++rde_fan_lib_static = static_library('runtime',
++                                    sources,
++                                    install : true)
++
++executable(
++  'rde_fan_sensor',
++  link_with: rde_fan_lib_static,
++  link_args: dynamic_linker,
++  implicit_include_directories: false,
++  dependencies: deps,
++  install: true,
++  install_dir: get_option('bindir'))
++
++
++if get_option('systemd').enabled()
++  systemd_system_unit_dir = dependency('systemd').get_variable(
++          pkgconfig: 'systemdsystemunitdir')
++
++systemd_system_unit_dir = dependency('systemd').get_variable(
++          pkgconfig: 'systemdsystemunitdir')
++configure_file(
++  copy: true,
++  input: 'service_files/rde_fan_sensor.service',
++  install: true,
++  install_dir: systemd_system_unit_dir,
++  output: 'rde_fan_sensor.service',
++)
++endif
++
+diff --git a/rde_fan_sensor/service_files/rde_fan_sensor.service b/rde_fan_sensor/service_files/rde_fan_sensor.service
+new file mode 100644
+index 0000000..a19e849
+--- /dev/null
++++ b/rde_fan_sensor/service_files/rde_fan_sensor.service
+@@ -0,0 +1,16 @@
++[Unit]
++Description=Phosphor RDE Fan Discovery Daemon
++Before=phosphor-pid-control.service
++After=rded.service
++Requires=rded.service
++After=xyz.openbmc_project.EntityManager.service
++Requires=xyz.openbmc_project.EntityManager.service
++
++[Service]
++Type=simple
++Restart=always
++RestartSec=5
++ExecStart=/usr/bin/rde_fan_sensor
++
++[Install]
++WantedBy=multi-user.target
+diff --git a/test/meson.build b/test/meson.build
+index b4739d9..b88162c 100644
+--- a/test/meson.build
++++ b/test/meson.build
+@@ -4,6 +4,7 @@ test_src = declare_dependency(
+ 
+ tests = [
+   'pldmd_registration_test',
++  'rde_utils_test'
+ ]
+ 
+ foreach t : tests
+@@ -14,7 +15,10 @@ foreach t : tests
+                      dependencies: [
+                          libpldm_dep,
+                          nlohmann_json_dep,
++                         sdbusplus,
++                         boost,
+                          gtest,
++                         gmock,
+                          test_src]),
+        workdir: meson.current_source_dir())
+ endforeach
+diff --git a/test/rde_utils_test.cpp b/test/rde_utils_test.cpp
+new file mode 100644
+index 0000000..dc50c4e
+--- /dev/null
++++ b/test/rde_utils_test.cpp
+@@ -0,0 +1,230 @@
++#include "rde_fan_sensor/RdeUtils.hpp"
++
++#include <sdbusplus/asio/connection.hpp>
++#include <sdbusplus/asio/object_server.hpp>
++#include <sdbusplus/bus.hpp>
++#include <sdbusplus/exception.hpp>
++#include <sdbusplus/test/sdbus_mock.hpp>
++
++#include <array>
++#include <string_view>
++
++#include <gmock/gmock-matchers.h>
++#include <gmock/gmock.h>
++#include <gtest/gtest.h>
++
++using ::testing::_;
++using ::testing::Eq;
++using ::testing::MatcherCast;
++using ::testing::Pointee;
++using ::testing::Return;
++using ::testing::SafeMatcherCast;
++using ::testing::StrEq;
++
++class TestRdeUtils : public ::testing::Test
++{
++  public:
++    TestRdeUtils() : bus(sdbusplus::get_mocked_new(&sdbusMock))
++    {}
++
++    ~TestRdeUtils()
++    {}
++
++  protected:
++    const std::string errorResponse = "ERROR";
++    const std::string successResponse =
++        "{\"@odata.id\": \"/redfish/v1/UpdateService\"}";
++    const int defaultSlot = 0xdefa;
++    sdbusplus::SdBusMock sdbusMock;
++    sdbusplus::bus_t bus;
++
++    void MockDbusCallsForDbusMatcher(const std::string& matchRule,
++                                     bool injectError)
++    {
++        ::testing::InSequence seq;
++        EXPECT_CALL(sdbusMock, sd_bus_add_match(_, _, StrEq(matchRule), _, _))
++            .WillOnce(Return(injectError ? -1 : 0));
++
++        if (!injectError)
++        {
++            EXPECT_CALL(sdbusMock, sd_bus_slot_unref(_))
++                .WillOnce(Return((sd_bus_slot*)&defaultSlot));
++        }
++    }
++
++    void MockDbusCallsForSendRdeDbusRequestApi(
++        const std::string& destination, const std::string& path,
++        const char* interface, const std::string& member,
++        const pldm_rde_operation_type operationType, const std::string& uri,
++        const std::string& rdeDeviceId, const std::string& requestPayload,
++        bool injectError)
++    {
++        ::testing::InSequence seq;
++        EXPECT_CALL(sdbusMock, sd_bus_message_new_method_call(
++                                   _, _, StrEq(destination), StrEq(path),
++                                   StrEq(interface), StrEq(member)))
++            .WillOnce(Return(0));
++
++        EXPECT_CALL(sdbusMock,
++                    sd_bus_message_append_basic(nullptr, SD_BUS_TYPE_INT32, _))
++            .WillOnce(Return(0));
++
++        EXPECT_CALL(sdbusMock, sd_bus_message_append_basic(
++                                   nullptr, SD_BUS_TYPE_BYTE,
++                                   MatcherCast<const void*>(
++                                       SafeMatcherCast<const uint8_t*>(
++                                           Pointee(Eq(operationType))))))
++            .WillOnce(Return(0));
++
++        EXPECT_CALL(sdbusMock,
++                    sd_bus_message_append_basic(
++                        nullptr, SD_BUS_TYPE_STRING,
++                        MatcherCast<const void*>(
++                            SafeMatcherCast<const char*>(StrEq(uri)))))
++            .WillOnce(Return(0));
++
++        EXPECT_CALL(sdbusMock,
++                    sd_bus_message_append_basic(
++                        nullptr, SD_BUS_TYPE_STRING,
++                        MatcherCast<const void*>(
++                            SafeMatcherCast<const char*>(StrEq(rdeDeviceId)))))
++            .WillOnce(Return(0));
++
++        EXPECT_CALL(sdbusMock,
++                    sd_bus_message_append_basic(
++                        nullptr, SD_BUS_TYPE_STRING,
++                        MatcherCast<const void*>(SafeMatcherCast<const char*>(
++                            StrEq(requestPayload)))))
++            .WillOnce(Return(0));
++
++        EXPECT_CALL(sdbusMock, sd_bus_call(nullptr, nullptr, 0, _, _))
++            .WillOnce(Return(injectError ? -1 : 0));
++
++        if (!injectError)
++        {
++            EXPECT_CALL(sdbusMock, sd_bus_message_read_basic(nullptr, _, _))
++                .WillOnce(Return(0));
++        }
++    }
++};
++
++TEST_F(TestRdeUtils, isResponseErrorTest)
++{
++    EXPECT_TRUE(isResponseError(errorResponse));
++    EXPECT_FALSE(isResponseError(successResponse));
++}
++
++TEST_F(TestRdeUtils, setupRdeDeviceDetectionMatchesTest)
++{
++    std::function<void(sdbusplus::message_t&)>
++        rdeDeviceDetetectionMatchCallback = [&](sdbusplus::message_t& message) {
++            if (message.is_method_error())
++            {
++                std::cerr << "callback method error\n";
++                return;
++            }
++        };
++
++    std::string rdeDetectionMatchRule =
++        sdbusplus::bus::match::rules::propertiesChangedNamespace(
++            rdeDevicesPath, rdeDeviceInterface);
++
++    // Test the success case
++    {
++        ::testing::InSequence seq;
++
++        MockDbusCallsForDbusMatcher(rdeDetectionMatchRule, false);
++        std::vector<std::unique_ptr<sdbusplus::bus::match_t>> detectionMatches =
++            setupRdeDeviceDetectionMatches(bus,
++                                           rdeDeviceDetetectionMatchCallback);
++
++        EXPECT_FALSE(detectionMatches.empty());
++    }
++
++    // Test the failure case
++    {
++        ::testing::InSequence seq;
++
++        MockDbusCallsForDbusMatcher(rdeDetectionMatchRule, true);
++        // An exception is raised if D-Bus matcher is not created successfully
++        EXPECT_THROW(setupRdeDeviceDetectionMatches(
++                         bus, rdeDeviceDetetectionMatchCallback),
++                     std::exception);
++    }
++}
++
++TEST_F(TestRdeUtils, setupRdeDeviceRemovalMatchesTest)
++{
++    std::function<void(sdbusplus::message_t&)> rdeDeviceRemovalMatchCallback =
++        [&](sdbusplus::message_t& message) {
++            if (message.is_method_error())
++            {
++                std::cerr << "callback method error\n";
++                return;
++            }
++        };
++
++    std::string rdeRemovalMatchRule =
++        sdbusplus::bus::match::rules::interfacesRemoved() +
++        sdbusplus::bus::match::rules::argNpath(0, std::string(rdeDevicesPath) +
++                                                      "/");
++
++    // Test the success case
++    {
++        ::testing::InSequence seq;
++
++        MockDbusCallsForDbusMatcher(rdeRemovalMatchRule, false);
++        std::unique_ptr<sdbusplus::bus::match_t> removalMatch =
++            setupRdeDeviceRemovalMatches(bus, rdeDeviceRemovalMatchCallback);
++        EXPECT_FALSE(removalMatch == nullptr);
++    }
++
++    // Test the failure case
++    {
++        ::testing::InSequence seq;
++
++        MockDbusCallsForDbusMatcher(rdeRemovalMatchRule, true);
++        // An exception is raised if D-Bus matcher is not created successfully
++        EXPECT_THROW(
++            setupRdeDeviceRemovalMatches(bus, rdeDeviceRemovalMatchCallback),
++            std::exception);
++    }
++}
++
++TEST_F(TestRdeUtils, sendRdeDbusRequestTest)
++{
++    std::string uri = "/redfish/v1/Chassis/RdeTRAY/Sensors/fan0_duty";
++    std::string rdeDeviceId = "1_1_4_1";
++    std::string rdeServiceName = "xyz.openbmc_project.rdeoperation";
++    std::string rdeObjPath = "/xyz/openbmc_project/rde_devices/1_1_4_1";
++    pldm_rde_operation_type operationType = PLDM_RDE_OPERATION_READ;
++    std::string member = "execute_rde";
++    std::string requestPayload = "default";
++
++    // Test the success case
++    {
++        ::testing::InSequence seq;
++        MockDbusCallsForSendRdeDbusRequestApi(
++            rdeServiceName, rdeObjPath, rdeDeviceInterface, member,
++            operationType, uri, rdeDeviceId, requestPayload, false);
++        // Expect std::logic_error exception, as the mock
++        // sd_bus_message_read_basic API cannot construct a response string with
++        // nullptr
++        EXPECT_THROW(sendRdeDbusRequest(bus, uri, rdeDeviceId, rdeServiceName,
++                                        rdeObjPath, operationType,
++                                        requestPayload),
++                     std::logic_error);
++    }
++
++    // Test the failure case
++    {
++        ::testing::InSequence seq;
++        MockDbusCallsForSendRdeDbusRequestApi(
++            rdeServiceName, rdeObjPath, rdeDeviceInterface, member,
++            operationType, uri, rdeDeviceId, requestPayload, true);
++        EXPECT_THAT(sendRdeDbusRequest(bus, uri, rdeDeviceId, rdeServiceName,
++                                       rdeObjPath, operationType,
++                                       requestPayload),
++                    errorResponse);
++    }
++}
+-- 
+2.34.1
+

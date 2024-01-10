@@ -1,0 +1,103 @@
+From 9d065ca57602c8b8acd84d77b9d224c1163d9846 Mon Sep 17 00:00:00 2001
+From: Mia Lin <mimi05633@gmail.com>
+Date: Fri, 29 Dec 2023 15:16:09 +0800
+Subject: [PATCH] pldm: Fix build error
+
+Signed-off-by: Mia Lin <mimi05633@gmail.com>
+---
+ rde_fan_sensor/meson.build               |  2 +-
+ rded/helper/discovery/base_discovery.cpp |  2 +-
+ rded/helper/discovery/base_discovery.hpp |  4 ++--
+ rded/meson.build                         | 12 ++++--------
+ 4 files changed, 8 insertions(+), 12 deletions(-)
+
+diff --git a/rde_fan_sensor/meson.build b/rde_fan_sensor/meson.build
+index de558d730..8d962cc1c 100644
+--- a/rde_fan_sensor/meson.build
++++ b/rde_fan_sensor/meson.build
+@@ -19,7 +19,7 @@ deps = [
+   libpldm_dep,
+   libbej_dep,
+   boost,
+-  nlohmann_json,
++  nlohmann_json_dep,
+   phosphor_dbus_interfaces,
+   libpldmutils,
+   sdbusplus,
+diff --git a/rded/helper/discovery/base_discovery.cpp b/rded/helper/discovery/base_discovery.cpp
+index 1a21b802a..0cbc73a6d 100644
+--- a/rded/helper/discovery/base_discovery.cpp
++++ b/rded/helper/discovery/base_discovery.cpp
+@@ -1,6 +1,6 @@
+ #include "libpldm/base.h"
+ #include "libpldm/pldm.h"
+-#include "libpldm/pldm_base_requester.h"
++#include "libpldm/requester/pldm_base_requester.h"
+ 
+ #include "helper/common.hpp"
+ 
+diff --git a/rded/helper/discovery/base_discovery.hpp b/rded/helper/discovery/base_discovery.hpp
+index a7094b9ea..5c40ccc8e 100644
+--- a/rded/helper/discovery/base_discovery.hpp
++++ b/rded/helper/discovery/base_discovery.hpp
+@@ -1,4 +1,4 @@
+-#include "libpldm/pldm_base_requester.h"
++#include "libpldm/requester/pldm_base_requester.h"
+ 
+ #include <iostream>
+ #include <map>
+@@ -20,4 +20,4 @@ std::optional<struct requester_base_context*>
+     getBaseContext(std::string_view rdeDevice);
+ 
+ // cleanup at exit
+-void cleanupBaseDiscAtExit();
+\ No newline at end of file
++void cleanupBaseDiscAtExit();
+diff --git a/rded/meson.build b/rded/meson.build
+index b0d1509db..4de00b86b 100644
+--- a/rded/meson.build
++++ b/rded/meson.build
+@@ -15,9 +15,6 @@ args = [
+ headers = ['.', '..']
+ requester_inc = include_directories(headers)
+ req_src = declare_dependency(
+-          sources: [
+-            '../pldmd/dbus_impl_requester.cpp',
+-            '../pldmd/instance_id.cpp'],
+           include_directories:requester_inc)
+ boost = dependency('boost',version : '>=1.80.0', required : false, include_type: 'system')
+ 
+@@ -42,7 +39,7 @@ deps = [
+   libpldm_dep,
+   libbej_dep,
+   boost_dep,
+-  nlohmann_json,
++  nlohmann_json_dep,
+   phosphor_dbus_interfaces,
+   libpldmutils,
+   sdbusplus,
+@@ -63,12 +60,11 @@ librdedupdatelib = static_library(
+ executable(
+   'rded',
+   sources,
+-  link_args: dynamic_linker,
++  link_args: [dynamic_linker, '-ludev'],
+   implicit_include_directories: false,
+   dependencies: deps,
+   install: true,
+-  install_dir: get_option('bindir'),
+-  link_args : ['-ludev'])
++  install_dir: get_option('bindir'))
+ if get_option('systemd').enabled()
+   systemd_system_unit_dir = dependency('systemd').get_variable(
+           pkgconfig: 'systemdsystemunitdir')
+@@ -82,4 +78,4 @@ configure_file(
+   install_dir: systemd_system_unit_dir,
+   output: 'rded.service',
+ )
+-endif
+\ No newline at end of file
++endif
+-- 
+2.34.1
+
