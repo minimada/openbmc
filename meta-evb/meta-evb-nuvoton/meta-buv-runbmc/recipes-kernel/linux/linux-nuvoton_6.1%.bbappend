@@ -15,3 +15,4 @@ SRC_URI:append:buv-runbmc = " file://0013-drivers-pmbus-modify-fw_version-comman
 
 # MCTP test
 SRC_URI:append:buv-runbmc = " file://0001-dts-add-mctp-i2c-buv.patch"
+SRC_URI:append:buv-runbmc = " file://usb_acm.cfg"

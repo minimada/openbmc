@@ -1,0 +1,889 @@
+commit dae95f39665190d3befe7a787f9bd43b75220949
+Author: Brian Ma <chma0@nuvoton.com>
+Date:   Mon Jan 22 17:24:11 2024 +0800
+
+    rde device implement test
+
+diff --git a/libpldmresponder/meson.build b/libpldmresponder/meson.build
+index 687fa82..0fbce9b 100644
+--- a/libpldmresponder/meson.build
++++ b/libpldmresponder/meson.build
+@@ -27,7 +27,8 @@ sources = [
+   '../host-bmc/dbus_to_host_effecters.cpp',
+   '../host-bmc/host_condition.cpp',
+   '../host-bmc/custom_dbus.cpp',
+-  'event_parser.cpp'
++  'event_parser.cpp',
++  'rde.cpp'
+ ]
+ 
+ responder_headers = ['.']
+diff --git a/libpldmresponder/rde.cpp b/libpldmresponder/rde.cpp
+new file mode 100644
+index 0000000..1de0359
+--- /dev/null
++++ b/libpldmresponder/rde.cpp
+@@ -0,0 +1,571 @@
++#include "rde.hpp"
++
++#include "common/utils.hpp"
++
++#include <phosphor-logging/lg2.hpp>
++
++#include <filesystem>
++#include <fstream>
++
++PHOSPHOR_LOG2_USING;
++
++namespace fs = std::filesystem;
++using namespace pldm::utils;
++
++namespace pldm
++{
++namespace responder
++{
++namespace rde
++{
++
++constexpr size_t MAX_FILE_SIZE = 1 * 1024 * 1024; // 1 MB
++// constexpr uint32_t RDE_SUPPORT_RESOURCE_ID = 0x0;
++// std::vector<uint32_t> resourceIds = {0x0, 0xffffffff};
++const std::string DICT_PATH = "/etc/rde/dict.bin";
++const std::string ANNOTATION_PATH = "/etc/rde/annotation.bin";
++const std::string RDE_DATA_PATH = "/etc/rde/data.bin";
++std::unordered_map<uint32_t, std::string> RESOURCE_MAP = {
++    {0x0, DICT_PATH}, {0xffffffff, ANNOTATION_PATH}};
++
++// load file to context payload for receive command
++int Handler::load(std::string filePath)
++{
++    std::uintmax_t fileSize = 0;
++    try
++    {
++        fileSize = fs::file_size(filePath);
++    }
++    catch (const fs::filesystem_error& e)
++    {
++        lg2::error("Cannot read file: {FILE}, {ERROR}", "FILE", filePath,
++                   "ERROR", e.what());
++        return -1;
++    }
++
++    if (fileSize > MAX_FILE_SIZE)
++    {
++        lg2::error("file size is greater than maximum");
++        return -1;
++    }
++    ctx.payload = std::vector<uint8_t>(fileSize);
++    std::ifstream stream(filePath, std::ios::in | std::ios::binary);
++    stream.read(reinterpret_cast<char*>(ctx.payload.data()), fileSize);
++
++    return (int)fileSize;
++}
++
++Response Handler::negotiateRedfishParameters(const pldm_msg* request,
++                                             size_t /*payloadLength*/)
++{
++    constexpr const char* device = "RDE test device";
++    uint8_t deviceConcurrencySupport = 1;
++    bitfield8_t deviceCapabilitiesFlags = {.byte = 0x3F};
++    bitfield16_t deviceFeatureSupport = {.value = 0x7389};
++    uint32_t deviceConfigurationSignature = 0xABCDEF12;
++    Response response(
++        sizeof(struct pldm_msg_hdr) +
++            sizeof(struct pldm_rde_negotiate_redfish_parameters_resp) + 16,
++        0);
++    auto responsePtr = reinterpret_cast<pldm_msg*>(response.data());
++    auto rc = encode_negotiate_redfish_parameters_resp(
++        request->hdr.instance_id, PLDM_SUCCESS, deviceConcurrencySupport,
++        deviceCapabilitiesFlags, deviceFeatureSupport,
++        deviceConfigurationSignature, device, PLDM_RDE_VARSTRING_ASCII,
++        responsePtr);
++    if (rc != PLDM_SUCCESS)
++    {
++        return ccOnlyResponse(request, rc);
++    }
++    return response;
++}
++
++Response Handler::negotiateMediumParameters(const pldm_msg* request,
++                                            size_t payloadLength)
++{
++    uint32_t mcMaxChunkSize;
++    auto rc = decode_negotiate_medium_parameters_req(request, payloadLength,
++                                                     &mcMaxChunkSize);
++    lg2::info("MC max transfer chunk size:{CHUNK}", "CHUNK", mcMaxChunkSize);
++    // spec ask that, should not happen
++    if (mcMaxChunkSize < PLDM_RDE_MIN_TRANSFER_SIZE_BYTES)
++        return ccOnlyResponse(request, PLDM_ERROR_INVALID_DATA);
++    // update max chunk size if greater than MC one
++    if (mcMaxChunkSize < RESPONDER_DEVICE_MAX_TRANSFER_CHUNK_SIZE)
++        ctx.transferChunkSize = mcMaxChunkSize;
++    lg2::info("used transfer chunk size:{CHUNK}", "CHUNK",
++              ctx.transferChunkSize);
++
++    Response response(
++        sizeof(struct pldm_msg_hdr) +
++            sizeof(struct pldm_rde_negotiate_medium_parameters_resp),
++        0);
++    auto responsePtr = reinterpret_cast<pldm_msg*>(response.data());
++    rc = encode_negotiate_medium_parameters_resp(
++        request->hdr.instance_id, PLDM_SUCCESS,
++        RESPONDER_DEVICE_MAX_TRANSFER_CHUNK_SIZE, responsePtr);
++    if (rc != PLDM_SUCCESS)
++    {
++        return ccOnlyResponse(request, rc);
++    }
++    return response;
++}
++
++Response Handler::getSchemaDictionary(const pldm_msg* request,
++                                      size_t payloadLength)
++{
++    uint8_t dictionaryFormat = 0x00;
++    ctx.transferHandle = 0xAABBCCDD;
++    uint32_t resourceId;
++    uint8_t requestedSchemaClass;
++    auto rc = decode_get_schema_dictionary_req(
++        request, payloadLength, &resourceId, &requestedSchemaClass);
++    if (rc != PLDM_SUCCESS)
++    {
++        return ccOnlyResponse(request, rc);
++    }
++    // check the request resource ID we support it or not
++    std::string filePath;
++    auto rid = RESOURCE_MAP.find(resourceId);
++    if (rid == RESOURCE_MAP.end())
++    {
++        lg2::error("not support resource: {RESOURCE}", "RESOURCE", resourceId);
++        return ccOnlyResponse(request, PLDM_RDE_ERROR_NO_SUCH_RESOURCE);
++    }
++    // currently rded only fetch major class, even annotation dict
++    if (requestedSchemaClass == PLDM_RDE_SCHEMA_MAJOR)
++    {
++        // filePath = DICT_PATH;
++        filePath = rid->second;
++    }
++    else if (requestedSchemaClass == PLDM_RDE_SCHEMA_ANNOTATION)
++    {
++        filePath = ANNOTATION_PATH;
++    }
++    else
++    {
++        lg2::error("not support schema class: {CLASS}", "CLASS",
++                   std::to_string(requestedSchemaClass));
++        return ccOnlyResponse(request, PLDM_RDE_ERROR_NO_SUCH_RESOURCE);
++    }
++    ctx.resourceID = resourceId;
++
++    Response response(sizeof(struct pldm_msg_hdr) +
++                          sizeof(struct pldm_rde_get_schema_dictionary_resp),
++                      0);
++    auto responsePtr = reinterpret_cast<pldm_msg*>(response.data());
++    rc = encode_get_schema_dictionary_resp(request->hdr.instance_id,
++                                           PLDM_SUCCESS, dictionaryFormat,
++                                           ctx.transferHandle, responsePtr);
++    if (rc != PLDM_SUCCESS)
++    {
++        return ccOnlyResponse(request, rc);
++    }
++    // open file for receive command
++    lg2::info("dictionary file: {FILE}", "FILE", filePath);
++    if (load(filePath) > 0)
++    {
++        ctx.responderStatus = PLDM_RDE_RESPONDER_WAITING_FOR_NEXT;
++        ctx.transferred = 0;
++        lg2::info("loaded dict binary");
++    }
++    else
++    {
++        ctx.responderStatus = PLDM_RDE_RESPONDER_REQUEST_FAILED;
++        return ccOnlyResponse(request, PLDM_ERROR);
++    }
++    // print debug message
++    std::cerr << "=== getSchemaDictionary ===" << std::endl;
++    std::cerr << "resourceId :" << resourceId << ", ";
++    std::cerr << "requestedSchemaClass :"
++              << std::to_string(requestedSchemaClass) << std::endl;
++    std::cerr << "file :" << filePath << ", ";
++    std::cerr << "dict format :" << std::to_string(dictionaryFormat)
++              << std::endl;
++    std::cerr << "transferHandle :" << ctx.transferHandle << std::endl;
++
++    return response;
++}
++
++Response Handler::multipartReceive(const pldm_msg* request,
++                                   size_t payloadLength)
++{
++    int payloadSize = sizeof(struct pldm_msg_hdr) +
++                      sizeof(struct pldm_rde_multipart_receive_resp);
++    uint32_t dataTransferHandle;
++    uint16_t operationId;
++    uint8_t transferOperation;
++    uint8_t transferFlag;
++    bool enableChecksum = false;
++
++    // check state
++    if (ctx.responderStatus != PLDM_RDE_RESPONDER_WAITING_FOR_NEXT)
++    {
++        lg2::error("payload not ready");
++        return ccOnlyResponse(request, PLDM_ERROR);
++    }
++
++    // decode request
++    auto rc = decode_rde_multipart_receive_req(
++        request, payloadLength, &dataTransferHandle, &operationId,
++        &transferOperation);
++    if (rc != PLDM_SUCCESS)
++    {
++        return CmdHandler::ccOnlyResponse(request, rc);
++    }
++    // print debug message
++    std::cerr << "=== multipartReceive request ===" << std::endl;
++    std::cerr << "Handle:" << std::to_string(dataTransferHandle);
++    std::cerr << ", OP ID:" << std::to_string(operationId) << std::endl;
++    std::cerr << "transferOperation:" << std::to_string(transferOperation)
++              << std::endl;
++
++    // check handle
++    if (ctx.transferHandle != dataTransferHandle)
++    {
++        lg2::error("not match handler, {HANDLE}", "HANDLE", dataTransferHandle);
++        return ccOnlyResponse(request, PLDM_ERROR);
++    }
++
++    // check operation
++    switch (transferOperation)
++    {
++        case PLDM_RDE_XFER_ABORT:
++            initResponderContext();
++            return ccOnlyResponse(request, PLDM_SUCCESS);
++        case PLDM_RDE_XFER_NEXT_PART:
++            if (ctx.transferred == 0)
++            {
++                rc = PLDM_ERROR;
++            }
++            break;
++        case PLDM_RDE_XFER_FIRST_PART:
++            if (ctx.transferred != 0)
++            {
++                rc = PLDM_ERROR;
++            }
++            break;
++        default:
++            rc = PLDM_ERROR;
++    }
++    if (rc != PLDM_SUCCESS)
++    {
++        lg2::error("invalid transferOperation: {OPERATION}", "OPERATION",
++                   transferOperation);
++        initResponderContext();
++        return CmdHandler::ccOnlyResponse(request, rc);
++    }
++    // calculate payload size, and copy to transfer temp
++    auto transDataSize = ctx.payload.size() - ctx.transferred;
++    auto cmdMaxPayloadSzie = ctx.transferChunkSize - payloadSize;
++    if (transDataSize > cmdMaxPayloadSzie)
++    {
++        transDataSize = cmdMaxPayloadSzie;
++    }
++
++    // handler transferFlag
++    if (ctx.transferred == 0) // start or start_end
++    {
++        if (ctx.payload.size() == transDataSize)
++        {
++            transferFlag = PLDM_RDE_START_AND_END;
++            // TODO: Add CRC32 checksum check, we should not eanble it before
++            // implement it
++            // enableChecksum = true;
++        }
++        else
++            transferFlag = PLDM_RDE_START;
++    }
++    else // middle or end
++    {
++        if (ctx.transferred + transDataSize < ctx.payload.size())
++            transferFlag = PLDM_RDE_MIDDLE;
++        else
++        {
++            transferFlag = PLDM_RDE_END;
++            // enableChecksum = true;
++        }
++    }
++
++    // handle request
++    payloadSize += transDataSize;
++    Response response(payloadSize, 0);
++    auto responsePtr = reinterpret_cast<pldm_msg*>(response.data());
++    // decode receive get some issue
++    // 1. CRC32 verify may not implement
++    // 2. assume payload length must larger than 64 byte
++    rc = encode_rde_multipart_receive_resp(
++        request->hdr.instance_id, PLDM_SUCCESS, transferFlag,
++        ++ctx.transferHandle, transDataSize, enableChecksum, 0,
++        ctx.payload.data() + ctx.transferred, responsePtr);
++    // print debug message
++    std::cerr << "=== multipartReceive response ===" << std::endl;
++    std::cerr << "Flag:" << std::to_string(transferFlag);
++    std::cerr << ", next Handle:" << std::to_string(ctx.transferHandle)
++              << std::endl;
++    std::cerr << "transDataSize:" << std::to_string(transDataSize) << ", ";
++    std::cerr << "transferred:" << std::to_string(ctx.transferred) << std::endl;
++    std::cerr << "RC:" << rc << ", ";
++    std::cerr << "payloadSize:" << payloadSize << std::endl;
++    std::cerr << "paloay size:" << ctx.payload.size() << std::endl;
++    std::cerr << "remains size:" << ctx.payload.size() - ctx.transferred
++              << std::endl;
++    if (rc != PLDM_SUCCESS)
++    {
++        return ccOnlyResponse(request, rc);
++    }
++    ctx.transferred += transDataSize;
++    // handle the end of transfer
++    if (transferFlag == PLDM_RDE_START_AND_END || transferFlag == PLDM_RDE_END)
++    {
++        ctx.responderStatus = PLDM_RDE_RESPONDER_READY;
++    }
++    return response;
++}
++
++void Handler::initOperationStatus()
++{
++    auto operation_ctx = std::make_unique<struct rde_operation>();
++    operation_ctx->operation_status = PLDM_RDE_OPERATION_INACTIVE;
++    operation_ctx->completion_time = 0xffffffff;
++    ctx.operation_ctx = std::move(operation_ctx);
++}
++
++Response Handler::RDEOperationStatus(const pldm_msg* request,
++                                     size_t payloadLength)
++{
++    uint32_t resourceId;
++    uint16_t operationId;
++    auto rc = decode_rde_operation_status_req(request, payloadLength,
++                                              &resourceId, &operationId);
++    if (rc != PLDM_SUCCESS)
++    {
++        std::cerr << "decode operation status failed\n";
++        return CmdHandler::ccOnlyResponse(request, rc);
++    }
++
++    // direct return operation context, not real implement
++    if (!ctx.operation_ctx)
++    {
++        std::cerr << "invalid operation context\n";
++        initOperationStatus();
++    }
++
++    // TODO: do we need resource - operation map? or just keep one operation
++    union pldm_rde_op_execution_flags operationExecutionFlags;
++    operationExecutionFlags.byte = 0x0;
++    union pldm_rde_permission_flags permissionFlags;
++    permissionFlags.byte = 0x01;
++    enum pldm_rde_varstring_format etagFormat = PLDM_RDE_VARSTRING_UTF_8;
++    const char etag[] = "etag";
++
++    // not sure the length is correct, we may not receive this command ^_<
++    constexpr size_t responsePayloadLength =
++        sizeof(struct pldm_msg_hdr) +
++        sizeof(struct pldm_rde_operation_status_resp) + 4;
++    Response response(responsePayloadLength, 0);
++    auto responsePtr = reinterpret_cast<pldm_msg*>(response.data());
++    rc = encode_rde_operation_status_resp(
++        request->hdr.instance_id, PLDM_SUCCESS,
++        ctx.operation_ctx->operation_status,
++        ctx.operation_ctx->percentage_complete,
++        ctx.operation_ctx->completion_time, &operationExecutionFlags,
++        ctx.transferHandle, &permissionFlags, 0, etagFormat, etag, NULL,
++        responsePtr);
++    if (rc != PLDM_SUCCESS)
++    {
++        std::cerr << "encode operation status resp failed\n";
++        return CmdHandler::ccOnlyResponse(request, rc);
++    }
++    return response;
++}
++
++Response Handler::RDEOperationInit(const pldm_msg* request,
++                                   size_t payloadLength)
++{
++    uint32_t resourceId;
++    uint16_t operationId;
++    uint8_t operationType;
++    uint8_t completionCode;
++    union pldm_rde_operation_flags operationFlags;
++    uint32_t sendTransferHandle;
++    uint8_t operationLocatorLength;
++    uint32_t requestPayloadLength;
++    uint8_t* operationLocator = std::make_unique<uint8_t>().get();
++    uint8_t* requestPayload = std::make_unique<uint8_t>().get();
++    // check status is valid
++    if (ctx.operation_ctx != NULL &&
++        ctx.operation_ctx->operation_status != PLDM_RDE_OPERATION_INACTIVE)
++    {
++        std::cerr << "operation context should be inactive\n";
++        return CmdHandler::ccOnlyResponse(request, PLDM_ERROR);
++    }
++    auto rc = decode_rde_operation_init_req(
++        request, payloadLength, &resourceId, &operationId, &operationType,
++        &operationFlags, &sendTransferHandle, &operationLocatorLength,
++        &requestPayloadLength, &operationLocator, &requestPayload);
++    if (rc != PLDM_SUCCESS)
++    {
++        std::cerr << "decode init operation reqeust failed\n";
++        return CmdHandler::ccOnlyResponse(request, rc);
++    }
++    std::cerr << "=== RDEOperationInit ===\n";
++    std::cerr << "res ID:" << std::to_string(resourceId) << ", ";
++    std::cerr << "op ID:" << std::to_string(operationId) << "\n";
++    std::cerr << "op type:" << std::to_string(operationType) << ", ";
++    std::cerr << "op flags:" << std::to_string(operationFlags.byte) << ", ";
++    std::cerr << "trans handler:" << std::to_string(sendTransferHandle) << "\n";
++    std::cerr << "op len:" << std::to_string(operationLocatorLength) << ", ";
++    std::cerr << "payload len:" << std::to_string(requestPayloadLength) << "\n";
++
++    auto rid = RESOURCE_MAP.find(resourceId);
++    if (rid == RESOURCE_MAP.end())
++    {
++        return ccOnlyResponse(request, PLDM_RDE_ERROR_NO_SUCH_RESOURCE);
++    }
++    // set decode data to operation ctx
++    auto operation_ctx = std::make_unique<struct rde_operation>();
++    operation_ctx->resource_id = resourceId;
++    operation_ctx->operation_id = operationId;
++    operation_ctx->operation_flags = operationFlags;
++    operation_ctx->send_data_transfer_handle = sendTransferHandle;
++    operation_ctx->operation_locator_length = operationLocatorLength;
++    operation_ctx->request_payload_length = requestPayloadLength;
++    operation_ctx->operation_locator = operationLocator;
++    operation_ctx->request_payload = requestPayload;
++    // handle operation
++    union pldm_rde_op_execution_flags operationExecutionFlags;
++    union pldm_rde_permission_flags permissionFlags;
++    // we are now only support read
++    if (operationType == PLDM_RDE_OPERATION_READ)
++    {
++        // operation data for response
++        completionCode = PLDM_SUCCESS;
++        operation_ctx->operation_status = PLDM_RDE_OPERATION_COMPLETED;
++        operation_ctx->percentage_complete = 100;
++        operation_ctx->completion_time = 0x0;
++        operationExecutionFlags.bits.have_result_payload = 0x1;
++        // perform load data
++        if (load(RDE_DATA_PATH) <= 0)
++            return ccOnlyResponse(request, PLDM_ERROR);
++        operation_ctx->resp_payload_length = ctx.payload.size();
++    }
++    else
++    {
++        completionCode = PLDM_RDE_ERROR_UNSUPPORTED;
++        operation_ctx->operation_status = PLDM_RDE_OPERATION_FAILED;
++        operation_ctx->percentage_complete = 0;
++        operation_ctx->completion_time = 0xffffffff;
++        operationExecutionFlags.bits.have_result_payload = 0x0;
++        operation_ctx->resp_payload_length = 0;
++    }
++    // assume we won't have next payload
++    operation_ctx->result_transfer_handle = 0x0;
++    permissionFlags.bits.read_allowed = 1;
++    operation_ctx->resp_operation_flags = &operationExecutionFlags;
++    operation_ctx->resp_permission_flags = &permissionFlags;
++    enum pldm_rde_varstring_format etagFormat = PLDM_RDE_VARSTRING_UTF_8;
++    const char etag[] = "etag";
++    std::cerr << "resp payload len:"
++              << std::to_string(operation_ctx->resp_payload_length) << ", ";
++    std::cerr << "cc:" << std::to_string(completionCode) << "\n";
++
++    // header + resp + etag + payload size
++    const size_t responseSize = sizeof(struct pldm_msg_hdr) +
++                                sizeof(struct pldm_rde_operation_init_resp) +
++                                sizeof(struct pldm_rde_varstring) +
++                                strlen(etag) + 1 /* var string end null*/ +
++                                operation_ctx->resp_payload_length;
++    // TODO: implement move to multipart receive if playload size over limit.
++    Response response(responseSize, 0);
++    auto responsePtr = reinterpret_cast<pldm_msg*>(response.data());
++    rc = encode_rde_operation_init_resp(
++        request->hdr.instance_id, completionCode,
++        operation_ctx->operation_status, operation_ctx->percentage_complete,
++        operation_ctx->completion_time, operation_ctx->resp_operation_flags,
++        operation_ctx->result_transfer_handle,
++        operation_ctx->resp_permission_flags,
++        operation_ctx->resp_payload_length, etagFormat, etag,
++        ctx.payload.data(), responsePtr);
++    if (rc != PLDM_SUCCESS)
++    {
++        std::cerr << "encode init operation resp failed\n";
++        return CmdHandler::ccOnlyResponse(request, rc);
++    }
++    ctx.operation_ctx = std::move(operation_ctx);
++    return response;
++}
++
++Response Handler::RDEOperationComplete(const pldm_msg* request,
++                                       size_t payloadLength)
++{
++    uint32_t resourceId;
++    uint16_t operationId;
++    auto rc = decode_rde_operation_complete_req(request, payloadLength,
++                                                &resourceId, &operationId);
++    if (rc != PLDM_SUCCESS)
++    {
++        std::cerr << "decode complete operation failed\n";
++        return CmdHandler::ccOnlyResponse(request, rc);
++    }
++    constexpr size_t responseSize =
++        sizeof(struct pldm_msg_hdr) +
++        sizeof(struct pldm_rde_operation_complete_resp);
++    Response response(responseSize, 0);
++    auto responsePtr = reinterpret_cast<pldm_msg*>(response.data());
++    uint32_t completionCode = PLDM_SUCCESS;
++    if (ctx.operation_ctx != NULL)
++    {
++        std::cerr << "=== RDEOperationComplete ===\n";
++        std::cerr << "res ID:" << std::to_string(resourceId) << ", ";
++        std::cerr << "op ID:" << std::to_string(operationId) << "\n";
++        std::cerr << "op status: "
++                  << std::to_string(ctx.operation_ctx->operation_status)
++                  << "\n";
++        if (ctx.operation_ctx->operation_status !=
++                PLDM_RDE_OPERATION_COMPLETED ||
++            ctx.operation_ctx->resource_id != resourceId ||
++            ctx.operation_ctx->operation_id != operationId)
++        {
++            completionCode = PLDM_RDE_ERROR_UNSUPPORTED;
++            std::cerr << "invalid state or ID\n";
++        }
++        else
++        {
++            // normal case, reset status for next operation
++            std::cerr << "normal completion\n";
++        }
++        // no matter errors, for next operation work
++        ctx.operation_ctx->operation_status = PLDM_RDE_OPERATION_INACTIVE;
++    }
++    else
++        completionCode = PLDM_RDE_ERROR_UNSUPPORTED;
++    rc = encode_rde_operation_complete_resp(request->hdr.instance_id,
++                                            completionCode, responsePtr);
++    if (rc != PLDM_SUCCESS)
++    {
++        std::cerr << "encode complete operation resp failed\n";
++        return CmdHandler::ccOnlyResponse(request, rc);
++    }
++    return response;
++}
++
++Response Handler::RDEOperationKill(const pldm_msg* request,
++                                   size_t /*payloadLength*/)
++{
++    /*uint32_t resourceId;
++    uint16_t operationId;
++    auto rc = decode_rde_operation_status_req(request, payloadLength,
++                                              &resourceId, &operationId);
++    constexpr size_t responsePayloadLength =
++        sizeof(struct pldm_msg_hdr) +
++        sizeof(struct pldm_rde_operation_status_resp) + 4;
++    Response response(responsePayloadLength, 0);
++    auto responsePtr = reinterpret_cast<pldm_msg*>(response.data());
++    return response;*/
++    return ccOnlyResponse(request, PLDM_ERROR);
++}
++
++} // namespace rde
++} // namespace responder
++} // namespace pldm
+diff --git a/libpldmresponder/rde.hpp b/libpldmresponder/rde.hpp
+new file mode 100644
+index 0000000..ccca2ca
+--- /dev/null
++++ b/libpldmresponder/rde.hpp
+@@ -0,0 +1,140 @@
++#pragma once
++
++#include "common/instance_id.hpp"
++#include "pldmd/handler.hpp"
++#include "requester/handler.hpp"
++
++#include <libpldm/requester/pldm_rde_requester.h>
++#include <stdint.h>
++
++#include <ctime>
++#include <functional>
++#include <map>
++#include <vector>
++
++namespace pldm
++{
++
++namespace responder
++{
++
++namespace rde
++{
++
++typedef enum rde_responder_status
++{
++    PLDM_RDE_RESPONDER_REQUEST_FAILED = -1,
++    PLDM_RDE_RESPONDER_READY = 0,
++    PLDM_RDE_RESPONDER_WAITING_FOR_NEXT = 1,
++    PLDM_RDE_RESPONDER_NO_PENDING_ACTION = 2
++} rde_res_status_t;
++
++// TODO: update the maximum chunk size as spec.
++// 64KB
++// constexpr uint32_t RESPONDER_DEVICE_MAX_TRANSFER_CHUNK_SIZE = 0x00010000;
++// use the value same as MC to prevent handle "throttle down"
++// 2048 define in rded/helper/common.hpp PLDM_MAX_REQUEST_BYTES;
++constexpr uint32_t RESPONDER_DEVICE_MAX_TRANSFER_CHUNK_SIZE = 1024;
++
++/**
++ * @brief RDE Responder context
++ */
++struct pldm_rde_responder_context
++{
++    uint8_t contextStatus;
++    // int next_command;
++    uint8_t responderStatus;
++    uint32_t resourceID;
++    uint32_t transferHandle;
++    uint32_t transferChunkSize;
++    size_t transferred;
++    std::vector<uint8_t> payload;
++    std::unique_ptr<struct rde_operation> operation_ctx;
++};
++
++class Handler : public CmdHandler
++{
++  public:
++    /** @brief Constructor
++     *
++     */
++    Handler()
++    {
++        handlers.emplace(
++            PLDM_NEGOTIATE_REDFISH_PARAMETERS,
++            [this](pldm_tid_t, const pldm_msg* request, size_t payloadLength) {
++            return this->negotiateRedfishParameters(request, payloadLength);
++        });
++        handlers.emplace(
++            PLDM_NEGOTIATE_MEDIUM_PARAMETERS,
++            [this](pldm_tid_t, const pldm_msg* request, size_t payloadLength) {
++            return this->negotiateMediumParameters(request, payloadLength);
++        });
++        handlers.emplace(
++            PLDM_GET_SCHEMA_DICTIONARY,
++            [this](pldm_tid_t, const pldm_msg* request, size_t payloadLength) {
++            return this->getSchemaDictionary(request, payloadLength);
++        });
++        handlers.emplace(
++            PLDM_RDE_MULTIPART_RECEIVE,
++            [this](pldm_tid_t, const pldm_msg* request, size_t payloadLength) {
++            return this->multipartReceive(request, payloadLength);
++        });
++        handlers.emplace(
++            PLDM_RDE_OPERATION_INIT,
++            [this](pldm_tid_t, const pldm_msg* request, size_t payloadLength) {
++            return this->RDEOperationInit(request, payloadLength);
++        });
++        handlers.emplace(
++            PLDM_RDE_OPERATION_COMPLETE,
++            [this](pldm_tid_t, const pldm_msg* request, size_t payloadLength) {
++            return this->RDEOperationComplete(request, payloadLength);
++        });
++        handlers.emplace(
++            PLDM_RDE_OPERATION_STATUS,
++            [this](pldm_tid_t, const pldm_msg* request, size_t payloadLength) {
++            return this->RDEOperationStatus(request, payloadLength);
++        });
++        handlers.emplace(
++            PLDM_RDE_OPERATION_KILL,
++            [this](pldm_tid_t, const pldm_msg* request, size_t payloadLength) {
++            return this->RDEOperationKill(request, payloadLength);
++        });
++        std::cerr << "RDE handler register" << std::endl;
++        initResponderContext();
++        std::cerr << "0122 modified 1" << std::endl;
++    }
++
++    // RDE initialize command handlers
++    Response negotiateRedfishParameters(const pldm_msg* request,
++                                        size_t payloadLength);
++    Response negotiateMediumParameters(const pldm_msg* request,
++                                       size_t payloadLength);
++    Response getSchemaDictionary(const pldm_msg* request, size_t payloadLength);
++    Response multipartReceive(const pldm_msg* request, size_t payloadLength);
++
++    // RDE operation handlers
++    Response RDEOperationInit(const pldm_msg* request, size_t payloadLength);
++    Response RDEOperationComplete(const pldm_msg* request,
++                                  size_t payloadLength);
++    Response RDEOperationStatus(const pldm_msg* request, size_t payloadLength);
++    Response RDEOperationKill(const pldm_msg* request, size_t payloadLength);
++
++    int load(std::string filePath);
++    void initOperationStatus();
++
++    void initResponderContext()
++    {
++        ctx.contextStatus = CONTEXT_FREE;
++        ctx.responderStatus = PLDM_RDE_RESPONDER_READY;
++        ctx.transferred = 0;
++        ctx.transferChunkSize = RESPONDER_DEVICE_MAX_TRANSFER_CHUNK_SIZE;
++    };
++
++  private:
++    struct pldm_rde_responder_context ctx;
++}; // class handler
++
++} // namespace rde
++} // namespace responder
++} // namespace pldm
+diff --git a/pldmd/pldmd.cpp b/pldmd/pldmd.cpp
+index 1a393dd..055805c 100644
+--- a/pldmd/pldmd.cpp
++++ b/pldmd/pldmd.cpp
+@@ -56,6 +56,7 @@ PHOSPHOR_LOG2_USING;
+ #include "libpldmresponder/fru.hpp"
+ #include "libpldmresponder/oem_handler.hpp"
+ #include "libpldmresponder/platform.hpp"
++#include "libpldmresponder/rde.hpp"
+ #include "xyz/openbmc_project/PLDM/Event/server.hpp"
+ #endif
+ 
+@@ -285,6 +286,7 @@ int main(int argc, char** argv)
+             oemPlatformHandler.get());
+     oemIbmPlatformHandler->setPlatformHandler(platformHandler.get());
+ #endif
++    auto rdeHandler = std::make_unique<rde::Handler>();
+ 
+     invoker.registerHandler(PLDM_BIOS, std::move(biosHandler));
+     invoker.registerHandler(PLDM_PLATFORM, std::move(platformHandler));
+@@ -293,6 +295,7 @@ int main(int argc, char** argv)
+         std::make_unique<base::Handler>(hostEID, instanceIdDb, event,
+                                         oemPlatformHandler.get(), &reqHandler));
+     invoker.registerHandler(PLDM_FRU, std::move(fruHandler));
++    invoker.registerHandler(PLDM_RDE, std::move(rdeHandler));
+     dbus_api::Pdr dbusImplPdr(bus, "/xyz/openbmc_project/pldm", pdrRepo.get());
+     sdbusplus::xyz::openbmc_project::PLDM::server::Event dbusImplEvent(
+         bus, "/xyz/openbmc_project/pldm");
+diff --git a/rded/helper/common.hpp b/rded/helper/common.hpp
+index c7b5416..87639d0 100644
+--- a/rded/helper/common.hpp
++++ b/rded/helper/common.hpp
+@@ -4,7 +4,7 @@
+ #define MAX_RETRIES_FOR_REQUEST 500
+ #define MAX_RETRIES_MCTP_SOCK_FAILURE 5
+ #define MAX_LOOP_ITERATION_STATE_MACHINE 50
+-constexpr bool DEBUG = false;
++constexpr bool DEBUG = true;
+ enum ContextState
+ {
+     RDE_CONTEXT_FREE = 0,
+diff --git a/rded/helper/discovery/rde_discovery.cpp b/rded/helper/discovery/rde_discovery.cpp
+index e89d798..864ac65 100644
+--- a/rded/helper/discovery/rde_discovery.cpp
++++ b/rded/helper/discovery/rde_discovery.cpp
+@@ -140,9 +140,10 @@ int initManager(const std::string& rdeDeviceId, int netId)
+     mcFeatures->value = 102; // Fixed for now
+     std::cout << "Initializing RDE Manager...\n";
+     std::vector<uint32_t> resourceIds = {
+-        0x00000000, 0x00010000, 0x00020000, 0x00030000, 0x00040000, 0x00050000,
++        /*0x00000000, 0x00010000, 0x00020000, 0x00030000, 0x00040000, 0x00050000,
+         0x00060000, 0x00070000, 0x00080000, 0x00090000, 0x000a0000, 0x000b0000,
+-        0x000c0000, 0x000d0000, 0x000e0000, 0x000f0000, 0x00100000, 0xffffffff};
++        0x000c0000, 0x000d0000, 0x000e0000, 0x000f0000, 0x00100000, 0xffffffff};*/
++        0x0, 0xffffffff}; // Fixed for RDE device
+ 
+     std::unique_ptr<struct pldm_rde_requester_manager> manager =
+         std::make_unique<struct pldm_rde_requester_manager>();
+@@ -286,14 +287,16 @@ std::optional<std::unordered_map<uint32_t, std::vector<uint8_t>>*>
+     if (DEBUG)
+     {
+         std::cerr << "Searching dict for: " << rdeDevice
+-                  << "with length: " << std::to_string(rdeDevice.length())
++                  << " with length: " << std::to_string(rdeDevice.length())
+                   << "\n";
+     }
+     auto it = dictionaryDeviceMap.find(rdeDevice);
+     if (it != dictionaryDeviceMap.end())
+     {
++        std::cerr << "getDictionaryMap: found\n";
+         return &(it->second);
+     }
++    std::cerr << "getDictionaryMap: not found\n";
+     return std::nullopt;
+ }
+ 
+@@ -340,6 +343,8 @@ void getDictMultipartResponseHandler(struct pldm_rde_requester_manager* manager,
+     }
+     std::string device_id = std::string(manager->device_name);
+     std::unordered_map<uint32_t, std::vector<uint8_t>>* dictionaryRidMap;
++    std::cerr << "dictionaryDeviceMap size: " << dictionaryDeviceMap.size()
++              << "\n";
+ 
+     std::optional<std::unordered_map<uint32_t, std::vector<uint8_t>>*>
+         dictionaryRidMapOpt = getDictionaryMap(device_id);
+@@ -347,7 +352,8 @@ void getDictMultipartResponseHandler(struct pldm_rde_requester_manager* manager,
+     if (dictionaryRidMapOpt.has_value())
+     {
+         dictionaryRidMap = dictionaryRidMapOpt.value();
+-        std::cout << dictionaryRidMap->size();
++        std::cerr << "dictionaryRidMap size:" << dictionaryRidMap->size()
++                  << "\n";
+     }
+     else
+     {
+@@ -355,18 +361,21 @@ void getDictMultipartResponseHandler(struct pldm_rde_requester_manager* manager,
+         return;
+     }
+ 
++    std::cerr << "save dict data, payloadLength: " << payloadLength << "\n";
+     auto it = dictionaryRidMap->find(resourceId);
+     std::vector<uint8_t>* dictionary;
+     if (it != dictionaryRidMap->end())
+     {
++        std::cerr << "dict rid found\n";
+         dictionary = &(it->second);
+         dictionary->insert(it->second.end(), *payload,
+                            (*payload) + payloadLength);
+     }
+     else
+     {
++        std::cerr << "dict rid not found\n";
+         (*dictionaryRidMap)[resourceId] =
+-            std::vector<uint8_t>(*payload, *payload + payloadLength);
++            std::vector<uint8_t>(*payload, (*payload) + payloadLength);
+         dictionary = &(*dictionaryRidMap)[resourceId];
+     }
+     if (DEBUG)
+@@ -703,7 +712,7 @@ int performDictionaryDiscoveryForDevice(const std::string& rdeDeviceId, int fd,
+         {
+             std::cerr << "Getting dictionary for "
+                       << manager->resource_ids[baseContext.current_pdr_resource
+-                                         ->resource_id_index]
++                                                   ->resource_id_index]
+                       << "..." << std::endl;
+         }
+ 
+@@ -732,7 +741,8 @@ int performDictionaryDiscoveryForDevice(const std::string& rdeDeviceId, int fd,
+ }
+ 
+ int getRdeFreeContextForRdeDevice(
+-    const std::string& rdeDevice, struct pldm_rde_requester_context* baseContext)
++    const std::string& rdeDevice,
++    struct pldm_rde_requester_context* baseContext)
+ {
+     auto it = managerCtxCounter.find(rdeDevice);
+     if (it != managerCtxCounter.end())
+@@ -755,7 +765,7 @@ int getDictionaryForRidDev(const std::string& rdeDeviceId, uint32_t resourceId,
+ 
+     std::optional<std::unordered_map<uint32_t, std::vector<uint8_t>>*>
+         dictionaryRidMapOpt = getDictionaryMap(rdeDeviceId);
+-    
++
+     if (!dictionaryRidMapOpt.has_value())
+     {
+         std::cerr << "Unable to fetch dictionary from map while storing\n";

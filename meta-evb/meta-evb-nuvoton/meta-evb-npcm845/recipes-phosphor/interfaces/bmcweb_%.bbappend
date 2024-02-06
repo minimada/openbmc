@@ -1,3 +1,4 @@
+FILESEXTRAPATHS:append:evb-npcm845 := "${THISDIR}/${PN}:"
 inherit entity-utils
 
 # Enable Redfish DBUS log/Journal support
@@ -16,4 +17,12 @@ EXTRA_OEMESON:append:evb-npcm845 = " -Drest=enabled"
 EXTRA_OEMESON:append:evb-npcm845 = " -Dredfish-new-powersubsystem-thermalsubsystem=enabled"
 
 # Enable debug
-# EXTRA_OEMESON:append:evb-npcm845 = " -Dbmcweb-logging=enabled"
+EXTRA_OEMESON:append:evb-npcm845 = " -Dbmcweb-logging=enabled"
+
+# RDE test
+EXTRA_OEMESON:append:evb-npcm845 = " -Dredfish-aggregation=enabled"
+SRC_URI:append:evb-npcm845 = " \
+    file://0001-bmcweb-Add-RDE-Device-aggregation-support.patch \
+    file://0002-bmcweb-Add-dbus-interface-calls-to-RDEd.patch \
+    file://0003-bmcweb-send-payload-to-RDE-devices-for-POST-operatio.patch \
+"

@@ -50,7 +50,6 @@ RDEPENDS:${PN}-system = " \
         openssl-engines \
         phosphor-host-postd \
         phosphor-sel-logger \
-        rsyslog \
         loadsvf \
         pciutils \
         cpfw \
@@ -62,17 +61,12 @@ RDEPENDS:${PN}-system = " \
         phosphor-ipmi-blobs \
         phosphor-image-signing \
         program-vbios \
-        dhrystone \
-        phosphor-ecc \
-        phosphor-ipmi-blobs \
-        phosphor-image-signing \
         optee-client \
         optee-test \
         cerberus-utility \
         estoraged \
         cryptsetup \
         systemd-analyze \
-        pldm \
-        mctp \
         usb-tty \
+        nuvoton-ipmi-oem \
         "
