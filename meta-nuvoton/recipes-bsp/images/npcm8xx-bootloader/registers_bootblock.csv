@@ -1,0 +1,81 @@
+############################################################################################# 
+# SPDX-License-Identifier: GPL-2.0 
+# Nuvoton IGPS: Image Generation And Programming Scripts For Arbel BMC 
+# Copyright (C) 2024 Nuvoton Technologies All Rights Reserved 
+# 
+# External Register Table. 
+# 
+# Format: 
+#       Register; Module index; Register index; field; value_to_write; reset; delay_exp_us 
+# 
+# Table will be executed by TIP FW L1 before bootblock execution
+# Regs and fields must match 'versions\npcm8xx.chip' registers file of NPCM8XX (same as DS). 
+# 
+# Reset match INTCR2 upper 9 bits. For PORST only execution write 0x100. For any reset 0x1FF. 
+# bit 8: PORST 
+# bit 7: CORST 
+# bit 6: WD0 
+# bit 5: SW1 
+# bit 4: SW2 
+# bit 3: SW3 
+# bit 2: TIPRST 
+# bit 1: WD1 
+# bit 0: WD2 
+# 
+# Examples: WD resets only: 0x43, SW resets only: 0x38, PORST only 0x100, CORST only: 0x80
+# 
+# delay[us] =>  (2 ^ delay - 1). 
+# All numbers are in hex format only except delay. 
+############################################################################################# 
+# Register  , Module index, Register index, field   , value_to_write, reset, delay_exp_us
+SCRPAD_03, 0, 0, 0, 0x3344, 0x1FF, 0
+# WD0RCRLK ,0,0,SPIBMCLK,1,0x100,0
+# WD1RCRLK ,0,0,SPIBMCLK,1,0x100,0
+# WD2RCRLK ,0,0,SPIBMCLK,1,0x100,0
+# SWRSTC1LK,0,0,SPIBMCLK,1,0x100,0
+# SWRSTC2LK,0,0,SPIBMCLK,1,0x100,0
+# SWRSTC3LK,0,0,SPIBMCLK,1,0x100,0
+# TIPRSTCLK,0,0,SPIBMCLK,1,0x100,0
+# CORSTCLK,0,0,SPIBMCLK,1,0x100,0
+# TIPRSTCLK,0,0,SPIBMCLK,1,0x100,0
+# WD0RCRLK ,0,0,TIP_ResetLK,1,0x100,0
+# WD1RCRLK ,0,0,TIP_ResetLK,1,0x100,0
+# WD2RCRLK ,0,0,TIP_ResetLK,1,0x100,0
+# SWRSTC1LK,0,0,TIP_ResetLK,1,0x100,0
+# SWRSTC2LK,0,0,TIP_ResetLK,1,0x100,0
+# SWRSTC3LK,0,0,TIP_ResetLK,1,0x100,0
+# TIPRSTCLK,0,0,TIP_ResetLK,1,0x100,0
+# CORSTCLK,0,0,TIP_ResetLK,1,0x100,0
+# WD0RCRBLK ,0,0,SEC_REG_RSTLK,1,0x100,0
+# WD1RCRBLK ,0,0,SEC_REG_RSTLK,1,0x100,0
+# WD2RCRBLK ,0,0,SEC_REG_RSTLK,1,0x100,0
+# SWRSTC1BLK,0,0,SEC_REG_RSTLK,1,0x100,0
+# SWRSTC2BLK,0,0,SEC_REG_RSTLK,1,0x100,0
+# SWRSTC3LK,0,0,SEC_REG_RSTLK,1,0x100,0
+# TIPRSTCBLK,0,0,SEC_REG_RSTLK,1,0x100,0
+# CORSTCBLK,0,0,SEC_REG_RSTLK,1,0x100,0
+# MCR_n,0,16,0,0x07040FF3,0x100,0
+# MCR_n,0,80,0,0x02008000,0x100,0
+# MCR_n,0,90,0,0x02008000,0x100,0
+# 
+# # Future: Lock SPI direct access for BMC:
+# # MCR_n,0,126,0,0x00040FF3,0x3FF,0
+# # MCR_n,0,127,0,0x00040FF3,0x3FF,0
+# MCR_n,0,126,0,0x00040FF2,0x3FF,0
+# MCR_n,0,127,0,0x00040FF2,0x3FF,0
+# 
+# # Future: Lock SPI0 register for BMC
+# # MCR_n,0,134,0,0x00040FF2,0x3FF,0
+# MCR_n,0,171,0,0x03000FF2,0x100,0
+# MCR_n,0,180,0,0x02008000,0x100,0
+# MFSEL_LK1_7,0,1,S0CS1SEL,1,0x3FF,0
+# MFSEL_LK1_7,0,7,TPGPIO1BSEL,1,0x3FF,0
+# MFSEL_LK1_7,0,7,TPGPIO0BSEL,1,0x3FF,0
+# MFSEL_LK1_7,0,7,TPJTAG3SEL,1,0x3FF,0
+# MFSEL_LK1_7,0,7,SMB14SELB ,1,0x3FF,0
+# MFSEL_LK1_7,0,4,JTAG2EN,1,0x3FF,0
+# MFSEL_LK1_7,0,4,JTAG2SEL,1,0x3FF,0
+# MFSEL_LK1_7,0,4,BSPASEL,1,0x3FF,0
+# SPLDCNT,0,0,0,0x0000001F,0x100,0
+# DSCNT,0,0,0,0x00000046,0x100,0
+# SRCNT,0,0,0,0x00000000,0x100,0
