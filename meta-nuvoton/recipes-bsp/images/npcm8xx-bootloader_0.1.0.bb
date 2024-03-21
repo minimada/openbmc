@@ -6,6 +6,7 @@ LIC_FILES_CHKSUM = "file://LICENSE;md5=b234ee4d69f5fce4486a80fdaf4a4263"
 IGPS_BRANCH ?= "main"
 SRC_URI = " \
     git://github.com/Nuvoton-Israel/igps-npcm8xx;branch=${IGPS_BRANCH};protocol=https \
+    file://config_replacer.py \
 "
 SRCREV = "d1a2b585de580028a74fda4b90729cc5192bc28f"
 S = "${WORKDIR}/git"
@@ -21,11 +22,8 @@ FILE_FMT = "file://{}"
 # Sign keys, replace them for production
 KEYS = "skmt_ecc_key_0.der skmt_ecc_key_1.der"
 # Configuration files
-XMLS = "BootBlockAndHeader_A1_EB.xml"
 CSVS = "registers_bootblock.csv"
-#KEY_SETTING = "key_setting"
-KEY_SETTING = ""
-CONFS = "${KEYS} ${XMLS} ${CSVS} ${KEY_SETTING}"
+CONFS = "${KEYS} ${CSVS} settings.json"
 SRC_URI += "${@compose_list(d, 'FILE_FMT', 'CONFS')}"
 
 IGPS_DIR = "${S}"
@@ -49,18 +47,9 @@ do_configure() {
     install -d ${KEY_FOLDER}
     cp -v ${KEYS} ${KEY_FOLDER}
 
-    # xml files
-    cp -v ${XMLS} ${INPUT_FOLDER}
-
     # csv files
     install -d ${CSV_FOLDER}
     cp -v ${CSVS} ${CSV_FOLDER}
-
-    # key setting
-    if [ -n "${KEY_SETTING}" ]; then
-        install -m 644 ${KEY_SETTING} \
-            ${IGPS_DIR}/py_scripts/ImageGeneration/key_setting_edit_me.py
-    fi
 
     # images
     cd ${DEPLOY_DIR_IMAGE}
@@ -72,6 +61,10 @@ do_configure() {
     else
         cp -v ${BB_NO_TIP_BIN} ${INPUT_FOLDER}
     fi
+
+    # replace settings for XML and key setting
+    cd ${IGPS_DIR}
+    python3 ../config_replacer.py ../settings.json
 }
 
 do_compile() {

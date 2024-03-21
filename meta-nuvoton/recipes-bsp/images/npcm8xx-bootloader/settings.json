@@ -1,0 +1,11 @@
+{
+    "BootBlockAndHeader.xml":
+    {
+        "MC_CONFIG": "0x05",
+        "FIU1_CLK_DIVIDER": "7"
+    },
+    "key_setting_edit_me.py":
+    {
+        "skmt_key_which_signs_uboot": "\"skmt_key2\""
+    }
+}
