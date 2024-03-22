@@ -6,9 +6,9 @@ LIC_FILES_CHKSUM = "file://LICENSE;md5=b234ee4d69f5fce4486a80fdaf4a4263"
 IGPS_BRANCH ?= "main"
 SRC_URI = " \
     git://github.com/Nuvoton-Israel/igps-npcm8xx;branch=${IGPS_BRANCH};protocol=https \
-    file://config_replacer.py \
+    file://0001-config_replacer-add-key_settings-support.patch \
 "
-SRCREV = "d1a2b585de580028a74fda4b90729cc5192bc28f"
+SRCREV = "7e009f77dcc5b4cde80f1ba47b1cf5a010d7e197"
 S = "${WORKDIR}/git"
 
 DEPENDS = " \
@@ -20,10 +20,10 @@ inherit python3native deploy
 FILE_FMT = "file://{}"
 
 # Sign keys, replace them for production
-KEYS = "skmt_ecc_key_0.der skmt_ecc_key_1.der"
+KEYS ?= "skmt_ecc_key_0.der skmt_ecc_key_1.der"
 # Configuration files
-CSVS = "registers_bootblock.csv"
-CONFS = "${KEYS} ${CSVS} settings.json"
+CSVS ?= "registers_bootblock.csv"
+CONFS ?= "${KEYS} ${CSVS} settings.json"
 SRC_URI += "${@compose_list(d, 'FILE_FMT', 'CONFS')}"
 
 IGPS_DIR = "${S}"
@@ -55,7 +55,7 @@ do_configure() {
     cd ${DEPLOY_DIR_IMAGE}
     cp -v ${COMBO1} ${INPUT_FOLDER}
 
-    # combo0
+    # combo0, TODO: check no TIP, SA
     if [ "${TIP_IMAGE}" = "True" ]; then
         cp -v ${TIP_BIN} ${INPUT_FOLDER}
     else
@@ -64,7 +64,7 @@ do_configure() {
 
     # replace settings for XML and key setting
     cd ${IGPS_DIR}
-    python3 ../config_replacer.py ../settings.json
+    python3 ${IGPS_DIR}/py_scripts/ImageGeneration/config_replacer.py ../settings.json
 }
 
 do_compile() {
