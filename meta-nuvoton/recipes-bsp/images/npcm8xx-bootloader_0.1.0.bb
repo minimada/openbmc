@@ -7,6 +7,7 @@ IGPS_BRANCH ?= "main"
 SRC_URI = " \
     git://github.com/Nuvoton-Israel/igps-npcm8xx;branch=${IGPS_BRANCH};protocol=https \
     file://0001-config_replacer-add-key_settings-support.patch \
+    file://one_igps.patch \
 "
 SRCREV = "7e009f77dcc5b4cde80f1ba47b1cf5a010d7e197"
 S = "${WORKDIR}/git"
@@ -32,12 +33,10 @@ KEY_FOLDER = "${IGPS_DIR}/py_scripts/ImageGeneration/keys/openssl"
 CSV_FOLDER = "${INPUT_FOLDER}/registers"
 
 TIP_BIN   = "Kmt_TipFwL0_Skmt_TipFwL1.bin"
-BB_BIN    = "arbel_a35_bootblock.bin"
-BB_NO_TIP_BIN = "arbel_a35_bootblock_no_tip.bin"
+#BB_BIN    = "arbel_a35_bootblock.bin"
 BL31_BIN  = "bl31.bin"
 OPTEE_BIN = "tee.bin"
 UBOOT_BIN = "u-boot.bin"
-COMBO1 = "${BB_BIN} ${BL31_BIN} ${OPTEE_BIN} ${UBOOT_BIN}"
 BOOTLOADER = "Kmt_TipFwL0_Skmt_TipFwL1_BootBlock_BL31_Tee_uboot.bin"
 
 do_configure() {
@@ -51,18 +50,24 @@ do_configure() {
     install -d ${CSV_FOLDER}
     cp -v ${CSVS} ${CSV_FOLDER}
 
-    # images
-    cd ${DEPLOY_DIR_IMAGE}
-    cp -v ${COMBO1} ${INPUT_FOLDER}
-
-    # combo0, TODO: check no TIP, SA
-    if [ "${TIP_IMAGE}" = "True" ]; then
-        cp -v ${TIP_BIN} ${INPUT_FOLDER}
-    else
-        cp -v ${BB_NO_TIP_BIN} ${INPUT_FOLDER}
+    # handle pre-built bootblock for No TIP, SA
+    if [ "${TIP_IMAGE}" != "True" ];then
+      if [ "${SA_TIP_IMAGE}" = "True" ];then
+        update_binary = "UpdateInputsBinaries_Arbel_A1_Google.py"
+      else
+        update_binary = "UpdateInputsBinaries_Arbel_A2_Google.py"
+      fi
+      python3 ${IGPS_DIR}/py_scripts/${update_binary}
+    #else
+      # we can directly use bb image in IGPS
+      #cp -v ${BB_BIN} ${INPUT_FOLDER}
     fi
 
-    # replace settings for XML and key setting
+    # copy Openbmc built images
+    cd ${DEPLOY_DIR_IMAGE}
+    cp -v ${BL31_BIN} ${OPTEE_BIN} ${UBOOT_BIN} ${INPUT_FOLDER}
+
+    # change customized settings for XML and key setting
     cd ${IGPS_DIR}
     python3 ${IGPS_DIR}/py_scripts/ImageGeneration/config_replacer.py ../settings.json
 }
@@ -71,7 +76,14 @@ do_compile() {
     cd ${IGPS_DIR}/py_scripts/ImageGeneration
     install -d output_binaries/tmp
     install -d inputs/key_input
-    python3 ${IGPS_DIR}/py_scripts/GenerateAll.py openssl
+    if [ "${TIP_IMAGE}" = "True" ];then
+      # Do not sign combo0 image again
+      python3 ${IGPS_DIR}/py_scripts/GenerateAll.py openssl ${DEPLOY_DIR_IMAGE}/${TIP_BIN}
+    else
+      # for No TIP, SA, we don't handle release binary from other recipe,
+      # IGPS contains all pre-built image we need.
+      python3 ${IGPS_DIR}/py_scripts/GenerateAll.py openssl
+    fi
 }
 
 do_deploy() {
