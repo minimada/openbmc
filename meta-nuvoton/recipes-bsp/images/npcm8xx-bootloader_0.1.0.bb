@@ -6,9 +6,9 @@ LIC_FILES_CHKSUM = "file://LICENSE;md5=b234ee4d69f5fce4486a80fdaf4a4263"
 IGPS_BRANCH ?= "main"
 SRC_URI = " \
     git://github.com/Nuvoton-Israel/igps-npcm8xx;branch=${IGPS_BRANCH};protocol=https \
-    file://one_igps.patch \
 "
-SRCREV = "874c4e20a4b296c622baf3fac8fdbe7e2a9381d0"
+SRCREV = "e40802335270a2af6744d9160c7eae15b5777217"
+
 S = "${WORKDIR}/git"
 
 DEPENDS = " \

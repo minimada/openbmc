@@ -1,11 +1,12 @@
 {
     "BootBlockAndHeader.xml":
     {
-        "MC_CONFIG": "0x05",
+        "MC_CONFIG": "0x04",
         "FIU1_CLK_DIVIDER": "7"
     },
     "key_setting_edit_me.py":
     {
-        "skmt_key_which_signs_uboot": "\"skmt_key2\""
+        "skmt_key_which_signs_uboot": "\"skmt_key2\"",
+        "COMBO1_OFFSET": "2048*1024"
     }
 }
