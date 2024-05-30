@@ -1,6 +1,7 @@
 {
     "BootBlockAndHeader.xml":
     {
+        "//": "BB settings for TIP image",
         "MC_CONFIG": "0x04",
         "FIU1_CLK_DIVIDER": "7"
     },
@@ -8,5 +9,9 @@
     {
         "skmt_key_which_signs_uboot": "\"skmt_key2\"",
         "COMBO1_OFFSET": "2048*1024"
+    },
+    "BootBlockAndHeader_no_tip.xml":
+    {
+        "//": "BB settings for no tip images"
     }
 }

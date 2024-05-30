@@ -1,0 +1,94 @@
+From 213894f0ff42963d4a19da976de074ec12797317 Mon Sep 17 00:00:00 2001
+From: Brian Ma <chma0@nuvoton.com>
+Date: Tue, 28 May 2024 15:20:45 +0800
+Subject: [PATCH 2/2] config_replacer: add comment in settings support
+
+Signed-off-by: Brian Ma <chma0@nuvoton.com>
+---
+ py_scripts/ImageGeneration/config_replacer.py |  5 ++++-
+ .../ImageGeneration/test_config_replacer.py   | 21 ++++++++++++++-----
+ 2 files changed, 20 insertions(+), 6 deletions(-)
+
+diff --git a/py_scripts/ImageGeneration/config_replacer.py b/py_scripts/ImageGeneration/config_replacer.py
+index 962741e..041b82f 100644
+--- a/py_scripts/ImageGeneration/config_replacer.py
++++ b/py_scripts/ImageGeneration/config_replacer.py
+@@ -94,6 +94,9 @@ def replace_value_in_xml(xml_file: str, dict: dict[str, str], target_xml: str =
+     elements = root.findall("BinField")
+     # replace all the value pairs we defined
+     for tag, value in dict.items():
++        # ignore comments
++        if tag == "comment" or tag == "//":
++            continue
+         # search all the elements
+         search_count = 0
+         for element in elements:
+@@ -108,7 +111,7 @@ def replace_value_in_xml(xml_file: str, dict: dict[str, str], target_xml: str =
+             else:
+                 search_count += 1
+         if search_count == len(elements):
+-            raise ValueError(f"Error: {tag} not found in the xml file")
++            raise ValueError(f"Error: TAG \"{tag}\" not found in the xml file")
+     # write the xml file
+     if target_xml is not None:
+         tree.write(target_xml)
+diff --git a/py_scripts/ImageGeneration/test_config_replacer.py b/py_scripts/ImageGeneration/test_config_replacer.py
+index 0892e73..14cb5ed 100755
+--- a/py_scripts/ImageGeneration/test_config_replacer.py
++++ b/py_scripts/ImageGeneration/test_config_replacer.py
+@@ -28,6 +28,7 @@ class ConfigReplacerTestCase(unittest.TestCase):
+         # Create a test settings file
+         settings = {
+             "BootBlockAndHeader.xml": {
++                "//": "this is a comment",
+                 "MC_CONFIG": "0x05"
+             }
+         }
+@@ -61,16 +62,18 @@ class ConfigReplacerTestCase(unittest.TestCase):
+         content = ET.SubElement(element, "content")
+         content.text = "0x01"
+         e2 = ET.SubElement(root, "BinField")
+-        name2 = ET.SubElement(element, "name")
++        name2 = ET.SubElement(e2, "name")
+         name2.text = "HOST_IF"
+-        content2 = ET.SubElement(element, "content")
++        content2 = ET.SubElement(e2, "content")
+         content2.text = "0x01"
+         tree = ET.ElementTree(root)
+         tree.write(self.xml_file)
+ 
+         # Define the replacement dictionary
+         replacements = {
+-            "MC_CONFIG": "0x05"
++            "MC_CONFIG": "0x05",
++            "comment": "this is a comment",
++            "//": "this is a comment"
+         }
+         not_exist_replacement = {
+             "MC_CONFIG1": "0x05"
+@@ -79,12 +82,20 @@ class ConfigReplacerTestCase(unittest.TestCase):
+         # Test replacing values in the XML file
+         replace_value_in_xml(self.xml_file, replacements, self.target_xml_file)
+ 
+-        # Verify the replaced values
++        # Verify the replaced values, and other value should not be changed
+         target_tree = ET.parse(self.target_xml_file)
+         target_root = target_tree.getroot()
+-        target_element = target_root.find("BinField")
++        target_elements = target_root.findall("BinField")
++        target_element = target_elements[0]
+         target_content = target_element.find("content")
+         self.assertEqual(target_content.text, "0x05")
++        target_content = target_element.find("name")
++        self.assertEqual(target_content.text, "MC_CONFIG")
++        target_element = target_elements[1]
++        target_content = target_element.find("content")
++        self.assertEqual(target_content.text, "0x01")
++        target_content = target_element.find("name")
++        self.assertEqual(target_content.text, "HOST_IF")
+         self.assertRaises(ValueError, replace_value_in_xml, self.xml_file, not_exist_replacement, self.target_xml_file)
+ 
+     def test_replace_value_in_py(self):
+-- 
+2.34.1
+
