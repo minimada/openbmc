@@ -1,0 +1,70 @@
+From 9e1990365631c3a4c666b7c3e738d1a6843f0fba Mon Sep 17 00:00:00 2001
+From: Brian Ma <chma0@nuvoton.com>
+Date: Mon, 8 Jan 2024 16:26:49 +0800
+Subject: [PATCH] Add encoder json offset support
+
+Upstream-Status: Inappropriate [oe-specific]
+---
+ include/libbej/bej_encoder_json.hpp |  3 +++
+ include/libbej/meson.build          |  1 +
+ src/bej_encoder_json.cpp            | 11 ++++++++++-
+ 3 files changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/include/libbej/bej_encoder_json.hpp b/include/libbej/bej_encoder_json.hpp
+index 79c0e18..e0cfb52 100644
+--- a/include/libbej/bej_encoder_json.hpp
++++ b/include/libbej/bej_encoder_json.hpp
+@@ -75,6 +75,9 @@ class BejEncoderJson
+                enum BejSchemaClass schemaClass,
+                struct RedfishPropertyParent* root);
+ 
++    int encode(const struct BejDictionaries* dictionaries,
++               enum BejSchemaClass schemaClass,
++               struct RedfishPropertyParent* root, uint16_t offset);
+     /**
+      * @brief Get the JSON encoded payload.
+      *
+diff --git a/include/libbej/meson.build b/include/libbej/meson.build
+index 6866643..daf8f40 100644
+--- a/include/libbej/meson.build
++++ b/include/libbej/meson.build
+@@ -3,6 +3,7 @@ libbej_headers = files(
+   'bej_decoder_json.hpp',
+   'bej_dictionary.h',
+   'bej_common.h',
++  'bej_tree.h',
+   'bej_encoder_core.h',
+   'bej_encoder_metadata.h',
+   'bej_encoder_json.hpp'
+diff --git a/src/bej_encoder_json.cpp b/src/bej_encoder_json.cpp
+index 8117f76..75dc00c 100644
+--- a/src/bej_encoder_json.cpp
++++ b/src/bej_encoder_json.cpp
+@@ -58,6 +58,15 @@ std::vector<uint8_t> BejEncoderJson::getOutput()
+ int BejEncoderJson::encode(const struct BejDictionaries* dictionaries,
+                            enum BejSchemaClass schemaClass,
+                            struct RedfishPropertyParent* root)
++{
++    return encode(dictionaries, schemaClass, root,
++                  BEJ_DICTIONARY_START_AT_HEAD);
++
++}
++
++int BejEncoderJson::encode(const struct BejDictionaries* dictionaries,
++               enum BejSchemaClass schemaClass,
++               struct RedfishPropertyParent* root, uint16_t offset)
+ {
+     struct BejEncoderOutputHandler output = {
+         .handlerContext = &encodedPayload,
+@@ -73,7 +82,7 @@ int BejEncoderJson::encode(const struct BejDictionaries* dictionaries,
+         .deleteStack = nullptr,
+     };
+ 
+-    return bejEncode(dictionaries, BEJ_DICTIONARY_START_AT_HEAD, schemaClass,
++    return bejEncode(dictionaries, offset, schemaClass,
+                      root, &output, &stackCallbacks);
+ }
+ 
+-- 
+2.34.1
+

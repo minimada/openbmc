@@ -1,0 +1,201 @@
+From 7d194fa463b007834f4f66bc68ea8baa7cd55299 Mon Sep 17 00:00:00 2001
+From: Konda Reddy Kachana <kkachana@google.com>
+Date: Wed, 12 Apr 2023 02:00:53 +0000
+Subject: [PATCH 2/4] bmcweb: Add dbus interface calls to RDEd
+
+Get RDE device configuration from entity-manager config
+and call dbus method to read the date from
+Rde Satellite Controller
+
+Tested:
+Redfish queries to a collection resulted all the satellite
+resources correctly. Also, query to a aggregated resource worked
+correctly.
+
+Upstream-Status: Inappropriate [oe-specific]
+Change-Id: I4525f02f23b8991290551a2098e5163ca99993b4
+Signed-off-by: Konda Reddy Kachana <kkachana@google.com>
+Signed-off-by: Ed Tanous <edtanous@google.com>
+---
+ redfish-core/include/redfish_aggregator.hpp | 106 ++++++++++++++++----
+ 1 file changed, 88 insertions(+), 18 deletions(-)
+
+diff --git a/redfish-core/include/redfish_aggregator.hpp b/redfish-core/include/redfish_aggregator.hpp
+index 5112747b..cd4aff8a 100644
+--- a/redfish-core/include/redfish_aggregator.hpp
++++ b/redfish-core/include/redfish_aggregator.hpp
+@@ -8,6 +8,7 @@
+ #include "parsing.hpp"
+ 
+ #include <array>
++#include <random>
+ #include <ranges>
+ #include <string_view>
+ 
+@@ -32,6 +33,10 @@ enum class SearchType
+ struct RdeSatelliteConfig
+ {
+     std::string name;
++    std::string vid;
++    std::string udevid;
++    std::string usbport;
++    std::string objectpath;
+ };
+ 
+ // clang-format off
+@@ -265,6 +270,15 @@ inline void addPrefixToItem(nlohmann::json& item, std::string_view prefix)
+     item = *strValue;
+ }
+ 
++static inline int generateRandomInt()
++{
++    std::random_device randomDevice;
++    std::mt19937 generator(randomDevice());
++    std::uniform_int_distribution<> distribution(1, 9999);
++    int randomNumber = distribution(generator);
++    return randomNumber;
++}
++
+ inline void addAggregatedHeaders(crow::Response& asyncResp,
+                                  const crow::Response& resp,
+                                  std::string_view prefix)
+@@ -570,8 +584,49 @@ class RedfishAggregator
+                 }
+                 rdeConfig.name = *propVal;
+             }
++            else if (prop.first == "VID")
++            {
++                const std::string* propVal =
++                    std::get_if<std::string>(&prop.second);
++                if (propVal == nullptr)
++                {
++                    BMCWEB_LOG_ERROR("Invalid VID value");
++                    return;
++                }
++                rdeConfig.vid = *propVal;
++            }
++            else if (prop.first == "UDEVID")
++            {
++                const std::string* propVal =
++                    std::get_if<std::string>(&prop.second);
++                if (propVal == nullptr)
++                {
++                    BMCWEB_LOG_ERROR("Invalid UDEVID value");
++                    return;
++                }
++                rdeConfig.udevid = *propVal;
++            }
++            else if (prop.first == "USBPORT")
++            {
++                const std::string* propVal =
++                    std::get_if<std::string>(&prop.second);
++                if (propVal == nullptr)
++                {
++                    BMCWEB_LOG_ERROR("Invalid USBPORT value");
++                    return;
++                }
++                rdeConfig.usbport = *propVal;
++            }
+         } // Finished reading properties
+ 
++        if (rdeConfig.udevid.empty())
++        {
++            BMCWEB_LOG_ERROR("Empty udevid");
++            return;
++        }
++        rdeConfig.objectpath = "/xyz/openbmc_project/rde_devices/" +
++                               rdeConfig.udevid;
++
+         // Set the prefix to a random string 'E0SB8D'
+         // (TODO) Generate a unique random prefix for each RDE Device
+         name = "E0SB8D";
+@@ -848,23 +903,31 @@ class RedfishAggregator
+         }
+         for (const auto& rsat : rdeSatelliteInfo)
+         {
+-            BMCWEB_LOG_DEBUG(" Collection Request: dbus call to RDE Daemon");
++            uint8_t operationId = 1;
++            BMCWEB_LOG_DEBUG(
++                " Collection Request: dbus call to RDE Daemon  operationId {}",
++                operationId);
+             std::string targetURI(thisReq.target());
+-
++            BMCWEB_LOG_DEBUG("objpath {} targetURI {} udevid {}",
++                             rsat.second.objectpath, targetURI,
++                             rsat.second.udevid);
+             crow::connections::systemBus->async_method_call(
+-                [rsat, asyncResp](const boost::system::error_code ec,
+-                                  const std::string& jsonString) {
++                [&operationId, rsat,
++                 asyncResp](const boost::system::error_code ec,
++                            const std::string& jsonString) {
+                 if (ec)
+                 {
+-                    BMCWEB_LOG_ERROR("DBUS response error {}, {}", ec.value(),
+-                                     ec.message());
++                    BMCWEB_LOG_ERROR(
++                        "DBUS response error operationId {} , {}, {}",
++                        operationId, ec.value(), ec.message());
+                     return;
+                 }
+                 processRdeCollectionResponse(rsat.first, asyncResp, jsonString);
+                 },
+-                "xyz.openbmc_project.rdeService",
+-                "/xyz/openbmc_project/rdeObject",
+-                "xyz.openbmc_project.rdeInterface", "getCollection", targetURI);
++                "xyz.openbmc_project.rdeoperation1", rsat.second.objectpath,
++                "xyz.openbmc_project.RdeDevice", "execute_rde",
++                generateRandomInt(), operationId, targetURI,
++                rsat.second.udevid);
+         }
+     }
+ 
+@@ -899,21 +962,27 @@ class RedfishAggregator
+         }
+         targetURI.erase(pos, prefix.size() + 1);
+ 
+-        BMCWEB_LOG_DEBUG(" Resource Request: dbus call to RDE Daemon");
+-
++        uint8_t operationId = 1;
++        BMCWEB_LOG_DEBUG(
++            " Resource Request: dbus call to RDE Daemon operationId {}",
++            operationId);
++        BMCWEB_LOG_DEBUG("objpath {} targetURI {} udevid {}",
++                         sat->second.objectpath, targetURI, sat->second.udevid);
+         crow::connections::systemBus->async_method_call(
+-            [prefix, asyncResp](const boost::system::error_code ec,
+-                                const std::string& jsonString) {
++            [&operationId, prefix,
++             asyncResp](const boost::system::error_code ec,
++                        const std::string& jsonString) {
+             if (ec)
+             {
+-                BMCWEB_LOG_ERROR("DBUS response error {}, {}", ec.value(),
+-                                 ec.message());
++                BMCWEB_LOG_ERROR("DBUS response error operationId {} , {}, {}",
++                                 operationId, ec.value(), ec.message());
+                 return;
+             }
+             processRdeResponse(prefix, asyncResp, jsonString);
+             },
+-            "xyz.openbmc_project.rdeService", "/xyz/openbmc_project/rdeObject",
+-            "xyz.openbmc_project.rdeInterface", "getResource", targetURI);
++            "xyz.openbmc_project.rdeoperation1", sat->second.objectpath,
++            "xyz.openbmc_project.RdeDevice", "execute_rde", generateRandomInt(),
++            operationId, targetURI, sat->second.udevid);
+     }
+     // Processes the response returned by a RDE Device and loads its
+     // contents into asyncResp
+@@ -1506,7 +1575,8 @@ class RedfishAggregator
+                 // satellites due to
+                 // /redfish/v1/AggregationService/AggregationSources/5B247A
+                 // being a local resource describing the satellite
+-                if (collectionItem.starts_with("5B247A_"))
++                if (collectionItem.starts_with("5B247A_") ||
++                    collectionItem.starts_with("E0SB8D_"))
+                 {
+                     BMCWEB_LOG_DEBUG("Need to forward a request");
+ 
+-- 
+2.43.0
+

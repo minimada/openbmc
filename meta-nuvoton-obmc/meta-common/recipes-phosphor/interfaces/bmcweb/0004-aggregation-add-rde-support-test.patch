@@ -1,0 +1,83 @@
+From 96e2392e5436607645b48a72f829e747813b52dc Mon Sep 17 00:00:00 2001
+From: Brian Ma <chma0@nuvoton.com>
+Date: Tue, 23 Apr 2024 09:00:06 +0800
+Subject: [PATCH 4/4] aggregation add rde support test
+
+Upstream-Status: Inappropriate [oe-specific]
+---
+ redfish-core/include/redfish_aggregator.hpp |  4 ++--
+ redfish-core/lib/aggregation_service.hpp    | 22 ++++++++++++++++++---
+ 2 files changed, 21 insertions(+), 5 deletions(-)
+
+diff --git a/redfish-core/include/redfish_aggregator.hpp b/redfish-core/include/redfish_aggregator.hpp
+index 89fcf947..0db75937 100644
+--- a/redfish-core/include/redfish_aggregator.hpp
++++ b/redfish-core/include/redfish_aggregator.hpp
+@@ -925,7 +925,7 @@ class RedfishAggregator
+                 }
+                 processRdeCollectionResponse(rsat.first, asyncResp, jsonString);
+                 },
+-                "xyz.openbmc_project.rdeoperation1", rsat.second.objectpath,
++                "xyz.openbmc_project.rdeoperation", rsat.second.objectpath,
+                 "xyz.openbmc_project.RdeDevice", "execute_rde",
+                 generateRandomInt(), operationId, targetURI, rsat.second.udevid,
+                 requestPayload);
+@@ -989,7 +989,7 @@ class RedfishAggregator
+             }
+             processRdeResponse(prefix, method, asyncResp, jsonString);
+             },
+-            "xyz.openbmc_project.rdeoperation1", sat->second.objectpath,
++            "xyz.openbmc_project.rdeoperation", sat->second.objectpath,
+             "xyz.openbmc_project.RdeDevice", "execute_rde", generateRandomInt(),
+             operationId, targetURI, sat->second.udevid, requestPayload);
+     }
+diff --git a/redfish-core/lib/aggregation_service.hpp b/redfish-core/lib/aggregation_service.hpp
+index 46071487..6c181e70 100644
+--- a/redfish-core/lib/aggregation_service.hpp
++++ b/redfish-core/lib/aggregation_service.hpp
+@@ -85,6 +85,13 @@ inline void populateAggregationSourceCollection(
+             "/redfish/v1/AggregationService/AggregationSources/{}", sat.first);
+         members.emplace_back(std::move(member));
+     }
++    for (const auto& rsat : rdeSatelliteInfo)
++    {
++        nlohmann::json::object_t member;
++        member["@odata.id"] = boost::urls::format(
++            "/redfish/v1/AggregationService/AggregationSources/{}", rsat.first);
++        members.emplace_back(std::move(member));
++    }
+     asyncResp->res.jsonValue["Members@odata.count"] = members.size();
+     asyncResp->res.jsonValue["Members"] = std::move(members);
+ }
+@@ -157,7 +164,8 @@ inline void populateAggregationSource(
+     }
+ 
+     const auto& sat = satelliteInfo.find(aggregationSourceId);
+-    if (sat == satelliteInfo.end())
++    const auto& rsat = rdeSatelliteInfo.find(aggregationSourceId);
++    if (sat == satelliteInfo.end() && rsat == rdeSatelliteInfo.end())
+     {
+         messages::resourceNotFound(asyncResp->res, "AggregationSource",
+                                    aggregationSourceId);
+@@ -177,8 +185,16 @@ inline void populateAggregationSource(
+     // TODO: We should use the "Name" from the satellite config whenever we add
+     // support for including it in the data returned in satelliteInfo.
+     asyncResp->res.jsonValue["Name"] = "Aggregation source";
+-    std::string hostName(sat->second.encoded_origin());
+-    asyncResp->res.jsonValue["HostName"] = std::move(hostName);
++    if (sat != satelliteInfo.end())
++    {
++        std::string hostName(sat->second.encoded_origin());
++        asyncResp->res.jsonValue["HostName"] = std::move(hostName);
++    }
++    else
++    {
++        asyncResp->res.jsonValue["HostName"] = "RDE_" + rsat->second.udevid;
++        return;
++    }
+ 
+     // The Redfish spec requires Password to be null in responses
+     asyncResp->res.jsonValue["Password"] = nullptr;
+-- 
+2.43.0
+

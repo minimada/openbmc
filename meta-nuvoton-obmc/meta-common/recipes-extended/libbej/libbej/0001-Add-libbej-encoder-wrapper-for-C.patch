@@ -1,0 +1,1103 @@
+From ef6601ce11c935aa9f5d03c5dac612b88d767d8f Mon Sep 17 00:00:00 2001
+From: Nikhil Namjoshi <nikhilnamjoshi@google.com>
+Date: Mon, 13 Mar 2023 10:52:53 -0700
+Subject: [PATCH] Add libbej encoder wrapper for C++
+
+Add unit tests and the test data files needed for unit tests.
+Move APIs from bej_decoder_test.cpp to a common file, to share those
+with bej_encoder_test.cpp
+
+Tested:
+Verified that encoding using the wrapper works well at runtime.
+Verified that the unit tests pass.
+
+Change-Id: I61b7c17690eb7e7fefd1973a22d4316c6214267e
+Signed-off-by: Nikhil Namjoshi <nikhilnamjoshi@google.com>
+
+%% original patch: 0001-Add-libbej-encoder-wrapper-for-C.patch
+---
+ include/libbej/bej_encoder_json.hpp |  43 +++
+ include/libbej/meson.build          |   4 +-
+ src/bej_encoder_json.cpp            | 119 +++++++
+ src/meson.build                     |   1 +
+ test/bej_decoder_test.cpp           | 100 +-----
+ test/bej_encoder_test.cpp           | 485 ++++++++++++++++++++++++++++
+ test/dictionaries/chassis_dict.bin  | Bin 0 -> 4576 bytes
+ test/encoded/chassis_enc.bin        | Bin 0 -> 187 bytes
+ test/include/bej_common_test.hpp    | 109 +++++++
+ test/json/chassis.json              |  34 ++
+ test/meson.build                    |   4 +
+ 11 files changed, 799 insertions(+), 100 deletions(-)
+ create mode 100644 include/libbej/bej_encoder_json.hpp
+ create mode 100644 src/bej_encoder_json.cpp
+ create mode 100644 test/bej_encoder_test.cpp
+ create mode 100644 test/dictionaries/chassis_dict.bin
+ create mode 100644 test/encoded/chassis_enc.bin
+ create mode 100644 test/include/bej_common_test.hpp
+ create mode 100644 test/json/chassis.json
+
+diff --git a/include/libbej/bej_encoder_json.hpp b/include/libbej/bej_encoder_json.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..cbc86cdd20a43cb5b93dba35dcfa6dd3800219ba
+--- /dev/null
++++ b/include/libbej/bej_encoder_json.hpp
+@@ -0,0 +1,43 @@
++#pragma once
++
++#include "bej_common.h"
++#include "bej_encoder_core.h"
++
++#include <vector>
++
++namespace libbej
++{
++
++/**
++ * @brief Class for encoding JSON input.
++ */
++class BejEncoderJson
++{
++  public:
++    /**
++     * @brief Encode the resource data.
++     *
++     * @param[in] dictionaries - dictionaries needed for encoding.
++     * @param[in] schemaClass - BEJ schema class.
++     * @param[in] root - pointer to a RedfishPropertyParent struct.
++     * @return 0 if successful.
++     */
++    int encode(const struct BejDictionaries* dictionaries,
++               enum BejSchemaClass schemaClass,
++               struct RedfishPropertyParent* root);
++
++    /**
++     * @brief Get the JSON encoded payload.
++     *
++     * @return std::vector<uint8_t> containing encoded JSON bytes. If the
++     * encoding was unsuccessful, the vector will be empty. Note that the
++     * vector resource will be moved to the requester API
++     */
++    std::vector<uint8_t> getOutput();
++
++  private:
++    std::vector<uint8_t> encodedPayload;
++    std::vector<void*> stack;
++};
++
++} // namespace libbej
+diff --git a/include/libbej/meson.build b/include/libbej/meson.build
+index ba8afc5bd87b979d12112822805397286cca4eb1..e8504e38654435bdffb85872133faecd533283da 100644
+--- a/include/libbej/meson.build
++++ b/include/libbej/meson.build
+@@ -4,7 +4,9 @@ libbej_headers = files(
+   'bej_dictionary.h',
+   'bej_common.h',
+   'bej_encoder_core.h',
+-  'bej_encoder_metadata.h'
++  'bej_encoder_metadata.h',
++  'bej_encoder_json.hpp',
++  'bej_tree.h'
+ )
+ 
+ install_headers(
+diff --git a/src/bej_encoder_json.cpp b/src/bej_encoder_json.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..484ca2aee7dae5c4eebfc92353d7a4f8d2ce3786
+--- /dev/null
++++ b/src/bej_encoder_json.cpp
+@@ -0,0 +1,119 @@
++#include "bej_encoder_json.hpp"
++
++namespace libbej
++{
++
++/**
++ * @brief Callback for stackEmpty. Check if stack is empty
++ *
++ * @param[in] dataPtr - pointer to a valid stack of type std::vector<void*>
++ * @return true if the stack is empty.
++ */
++
++bool stackEmpty(void* dataPtr)
++{
++    return (reinterpret_cast<std::vector<void*>*>(dataPtr))->empty();
++}
++
++/**
++ * @brief Callback for stackPeek. Read the first element from the stack
++ *
++ * @param[in] dataPtr - pointer to a valid stack of type std::vector<void*>
++ * @return the value of first element in the stack
++ */
++
++void* stackPeek(void* dataPtr)
++{
++    auto stack = reinterpret_cast<std::vector<void*>*>(dataPtr);
++    if (stack->empty())
++    {
++        return nullptr;
++    }
++    return stack->back();
++}
++
++/**
++ * @brief Callback for stackPop. Remove the top element from the stack.
++ *
++ * @param[in] dataPtr - pointer to a valid stack of type std::vector<void*>
++ * @return the value of first element in the stack
++ */
++
++void* stackPop(void* dataPtr)
++{
++    auto stack = reinterpret_cast<std::vector<void*>*>(dataPtr);
++    if (stack->empty())
++    {
++        return nullptr;
++    }
++    void* value = stack->back();
++    stack->pop_back();
++    return value;
++}
++
++/**
++ * @brief Callback for stackPush. Push a new element to the top of the stack.
++ *
++ * @param[in] property - property to push.
++ * @param[in] dataPtr - pointer to a valid stack of type std::vector<void*>
++ * @return 0 if successful.
++ */
++
++int stackPush(void* property, void* dataPtr)
++{
++    auto stack = reinterpret_cast<std::vector<void*>*>(dataPtr);
++    stack->push_back(property);
++    return 0;
++}
++
++/**
++ * @brief Callback to get the encoded json payload.
++ *
++ * @param[in] data - pointer to a valid stack of type std::vector<void*>
++ * @param[in] data_size - size of the stack
++ * @param[in] handlerContext - Buffer to store the payload
++ * @return 0 if successful.
++ */
++
++int getBejEncodedBuffer(const void* data, size_t data_size,
++                        void* handlerContext)
++{
++    auto stack = reinterpret_cast<std::vector<uint8_t>*>(handlerContext);
++    const uint8_t* dataBuf = reinterpret_cast<const uint8_t*>(data);
++    stack->insert(stack->end(), dataBuf, dataBuf + data_size);
++    return 0;
++}
++
++std::vector<uint8_t> BejEncoderJson::getOutput()
++{
++    std::vector<uint8_t> currentEncodedPayload = std::move(encodedPayload);
++    // Re-Initialize encodedPayload with empty vector to be used again for
++    // next encoding
++    encodedPayload = {};
++
++    return currentEncodedPayload;
++}
++
++int BejEncoderJson::encode(const struct BejDictionaries* dictionaries,
++                           enum BejSchemaClass schemaClass,
++                           struct RedfishPropertyParent* root)
++{
++    struct BejEncoderOutputHandler output = {
++        .handlerContext = &encodedPayload,
++        .recvOutput = &getBejEncodedBuffer,
++    };
++
++    struct BejPointerStackCallback stackCallbacks = {
++        .stackContext = &stack,
++        .stackEmpty = stackEmpty,
++        .stackPeek = stackPeek,
++        .stackPop = stackPop,
++        .stackPush = stackPush,
++        .deleteStack = nullptr,
++    };
++
++    return bejEncode(dictionaries, BEJ_DICTIONARY_START_AT_HEAD, schemaClass,
++                     root, &output, &stackCallbacks);
++}
++
++} // namespace libbej
+diff --git a/src/meson.build b/src/meson.build
+index 4876d80b2b616707941fa83f39e9c18fbdffa928..b7f070699abce04a421fae5fae239a593fad5fc3 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -7,6 +7,7 @@ libbej_lib = library(
+   'bej_encoder_core.c',
+   'bej_encoder_metadata.c',
+   'bej_decoder_json.cpp',
++  'bej_encoder_json.cpp',
+   include_directories : libbej_incs,
+   implicit_include_directories: false,
+   version: meson.project_version(),
+diff --git a/test/bej_decoder_test.cpp b/test/bej_decoder_test.cpp
+index b390017b0e7069cb7631c4ac4c4a3251e0543584..16cd19a622d23d21bf9b1d8b4155208ae378253d 100644
+--- a/test/bej_decoder_test.cpp
++++ b/test/bej_decoder_test.cpp
+@@ -1,11 +1,7 @@
++#include "bej_common_test.hpp"
+ #include "bej_decoder_json.hpp"
+-#include "nlohmann/json.hpp"
+ 
+-#include <fstream>
+-#include <iostream>
+ #include <memory>
+-#include <optional>
+-#include <span>
+ #include <string_view>
+ 
+ #include <gmock/gmock-matchers.h>
+@@ -15,24 +11,6 @@
+ namespace libbej
+ {
+ 
+-struct BejTestInputFiles
+-{
+-    const char* jsonFile;
+-    const char* schemaDictionaryFile;
+-    const char* annotationDictionaryFile;
+-    const char* errorDictionaryFile;
+-    const char* encodedStreamFile;
+-};
+-
+-struct BejTestInputs
+-{
+-    const nlohmann::json expectedJson;
+-    const uint8_t* schemaDictionary;
+-    const uint8_t* annotationDictionary;
+-    const uint8_t* errorDictionary;
+-    std::span<const uint8_t> encodedStream;
+-};
+-
+ struct BejDecoderTestParams
+ {
+     const std::string testName;
+@@ -73,82 +51,6 @@ const BejTestInputFiles dummySimpleTestFiles = {
+     .encodedStreamFile = "../test/encoded/dummy_simple_enc.bin",
+ };
+ 
+-// Buffer size for storing a single binary file data.
+-constexpr uint32_t maxBufferSize = 16 * 1024;
+-
+-std::streamsize readBinaryFile(const char* fileName, std::span<uint8_t> buffer)
+-{
+-    std::ifstream inputStream(fileName, std::ios::binary);
+-    if (!inputStream.is_open())
+-    {
+-        std::cerr << "Cannot open file: " << fileName << "\n";
+-        return 0;
+-    }
+-    auto readLength = inputStream.readsome(
+-        reinterpret_cast<char*>(buffer.data()), buffer.size_bytes());
+-    if (inputStream.peek() != EOF)
+-    {
+-        std::cerr << "Failed to read the complete file: " << fileName
+-                  << "  read length: " << readLength << "\n";
+-        return 0;
+-    }
+-    return readLength;
+-}
+-
+-std::optional<BejTestInputs> loadInputs(const BejTestInputFiles& files,
+-                                        bool readErrorDictionary = false)
+-{
+-    std::ifstream jsonInput(files.jsonFile);
+-    if (!jsonInput.is_open())
+-    {
+-        std::cerr << "Cannot open file: " << files.jsonFile << "\n";
+-        return std::nullopt;
+-    }
+-    nlohmann::json expJson;
+-    jsonInput >> expJson;
+-
+-    static uint8_t schemaDictBuffer[maxBufferSize];
+-    if (readBinaryFile(files.schemaDictionaryFile,
+-                       std::span(schemaDictBuffer, maxBufferSize)) == 0)
+-    {
+-        return std::nullopt;
+-    }
+-
+-    static uint8_t annoDictBuffer[maxBufferSize];
+-    if (readBinaryFile(files.annotationDictionaryFile,
+-                       std::span(annoDictBuffer, maxBufferSize)) == 0)
+-    {
+-        return std::nullopt;
+-    }
+-
+-    static uint8_t encBuffer[maxBufferSize];
+-    auto encLen = readBinaryFile(files.encodedStreamFile,
+-                                 std::span(encBuffer, maxBufferSize));
+-    if (encLen == 0)
+-    {
+-        return std::nullopt;
+-    }
+-
+-    static uint8_t errorDict[maxBufferSize];
+-    if (readErrorDictionary)
+-    {
+-        if (readBinaryFile(files.errorDictionaryFile,
+-                           std::span(errorDict, maxBufferSize)) == 0)
+-        {
+-            return std::nullopt;
+-        }
+-    }
+-
+-    BejTestInputs inputs = {
+-        .expectedJson = expJson,
+-        .schemaDictionary = schemaDictBuffer,
+-        .annotationDictionary = annoDictBuffer,
+-        .errorDictionary = errorDict,
+-        .encodedStream = std::span(encBuffer, encLen),
+-    };
+-    return inputs;
+-}
+-
+ TEST_P(BejDecoderTest, Decode)
+ {
+     const BejDecoderTestParams& test_case = GetParam();
+diff --git a/test/bej_encoder_test.cpp b/test/bej_encoder_test.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..4125670d295dc4e08a420944815b100452fdcfb3
+--- /dev/null
++++ b/test/bej_encoder_test.cpp
+@@ -0,0 +1,485 @@
++#include "bej_dictionary.h"
++#include "bej_encoder_core.h"
++#include "bej_tree.h"
++
++#include "bej_common_test.hpp"
++#include "bej_decoder_json.hpp"
++#include "bej_encoder_json.hpp"
++
++#include <vector>
++
++#include <gmock/gmock-matchers.h>
++#include <gmock/gmock.h>
++#include <gtest/gtest.h>
++
++namespace libbej
++{
++
++struct BejEncoderTestParams
++{
++    const std::string testName;
++    const BejTestInputFiles inputFiles;
++    std::string expectedJson;
++    struct RedfishPropertyParent* (*createResource)();
++};
++
++using BejEncoderTest = testing::TestWithParam<BejEncoderTestParams>;
++
++const BejTestInputFiles dummySimpleTestFiles = {
++    .jsonFile = "../test/json/dummysimple.json",
++    .schemaDictionaryFile = "../test/dictionaries/dummy_simple_dict.bin",
++    .annotationDictionaryFile = "../test/dictionaries/annotation_dict.bin",
++    .errorDictionaryFile = "",
++    .encodedStreamFile = "../test/encoded/dummy_simple_enc.bin",
++};
++
++const BejTestInputFiles driveOemTestFiles = {
++    .jsonFile = "../test/json/drive_oem.json",
++    .schemaDictionaryFile = "../test/dictionaries/drive_oem_dict.bin",
++    .annotationDictionaryFile = "../test/dictionaries/annotation_dict.bin",
++    .errorDictionaryFile = "",
++    .encodedStreamFile = "../test/encoded/drive_oem_enc.bin",
++};
++
++const BejTestInputFiles chassisTestFiles = {
++    .jsonFile = "../test/json/chassis.json",
++    .schemaDictionaryFile = "../test/dictionaries/chassis_dict.bin",
++    .annotationDictionaryFile = "../test/dictionaries/annotation_dict.bin",
++    .errorDictionaryFile = "",
++    .encodedStreamFile = "../test/encoded/chassis_enc.bin",
++};
++
++int recvOutput(const void* data, size_t data_size, void* handlerContext)
++{
++    auto stack = reinterpret_cast<std::vector<uint8_t>*>(handlerContext);
++    const uint8_t* dataBuf = reinterpret_cast<const uint8_t*>(data);
++    stack->insert(stack->end(), dataBuf, dataBuf + data_size);
++    return 0;
++}
++
++bool stackEmpty(void* dataPtr)
++{
++    auto stack = reinterpret_cast<std::vector<void*>*>(dataPtr);
++    return stack->empty();
++}
++
++void* stackPeek(void* dataPtr)
++{
++    auto stack = reinterpret_cast<std::vector<void*>*>(dataPtr);
++    if (stack->empty())
++    {
++        return nullptr;
++    }
++    return stack->back();
++}
++
++void* stackPop(void* dataPtr)
++{
++    auto stack = reinterpret_cast<std::vector<void*>*>(dataPtr);
++    if (stack->empty())
++    {
++        return nullptr;
++    }
++    void* value = stack->back();
++    stack->pop_back();
++    return value;
++}
++
++int stackPush(void* p, void* dataPtr)
++{
++    auto stack = reinterpret_cast<std::vector<void*>*>(dataPtr);
++    stack->push_back(p);
++    return 0;
++}
++
++struct RedfishPropertyParent* createDummyResource()
++{
++    static struct RedfishPropertyParent root;
++    bejTreeInitSet(&root, "DummySimple");
++
++    static struct RedfishPropertyLeafString id;
++    bejTreeAddString(&root, &id, "Id", "Dummy ID");
++
++    static struct RedfishPropertyLeafInt intProp;
++    bejTreeAddInteger(&root, &intProp, "SampleIntegerProperty", -5);
++
++    static struct RedfishPropertyLeafReal real;
++    bejTreeAddReal(&root, &real, "SampleRealProperty", -5576.90001);
++
++    static struct RedfishPropertyLeafNull enProp;
++    bejTreeAddNull(&root, &enProp, "SampleEnabledProperty");
++
++    static struct RedfishPropertyParent chArraySet1;
++    bejTreeInitSet(&chArraySet1, nullptr);
++
++    static struct RedfishPropertyLeafBool chArraySet1bool;
++    bejTreeAddBool(&chArraySet1, &chArraySet1bool, "AnotherBoolean", true);
++
++    static struct RedfishPropertyLeafEnum chArraySet1Ls;
++    bejTreeAddEnum(&chArraySet1, &chArraySet1Ls, "LinkStatus", "NoLink");
++
++    static struct RedfishPropertyParent chArraySet2;
++    bejTreeInitSet(&chArraySet2, nullptr);
++
++    static struct RedfishPropertyLeafEnum chArraySet2Ls;
++    bejTreeAddEnum(&chArraySet2, &chArraySet2Ls, "LinkStatus", "LinkDown");
++
++    static struct RedfishPropertyParent chArray;
++    bejTreeInitArray(&chArray, "ChildArrayProperty");
++
++    bejTreeLinkChildToParent(&chArray, &chArraySet1);
++    bejTreeLinkChildToParent(&chArray, &chArraySet2);
++
++    bejTreeLinkChildToParent(&root, &chArray);
++    return &root;
++}
++
++const std::string driveOemJson = R"(
++      {
++        "@odata.id": "/redfish/v1/drives/1",
++        "@odata.type": "#Drive.v1_5_0.Drive",
++        "Id": "Drive1",
++        "Actions": {
++            "#Drive.Reset": {
++                "target": "/redfish/v1/drives/1/Actions/Drive.Reset",
++                "title": "Reset a Drive",
++                "ResetType@Redfish.AllowableValues": [
++                        "On",
++                        "ForceOff",
++                        "ForceRestart",
++                        "Nmi",
++                        "ForceOn",
++                        "PushPowerButton"
++                    ]
++            }
++        },
++        "Status@Message.ExtendedInfo": [
++            {
++                "MessageId": "PredictiveFailure",
++                "RelatedProperties": ["FailurePredicted", "MediaType"]
++            }
++        ],
++        "Identifiers": [],
++        "Links": {}
++    }
++)";
++
++struct RedfishPropertyParent* createDriveOem()
++{
++    static struct RedfishPropertyParent root;
++    bejTreeInitSet(&root, "Drive");
++
++    static struct RedfishPropertyLeafString odataId;
++    bejTreeAddString(&root, &odataId, "@odata.id", "/redfish/v1/drives/1");
++
++    static struct RedfishPropertyLeafString odataType;
++    bejTreeAddString(&root, &odataType, "@odata.type", "#Drive.v1_5_0.Drive");
++
++    static struct RedfishPropertyLeafString id;
++    bejTreeAddString(&root, &id, "Id", "Drive1");
++
++    static struct RedfishPropertyParent actions;
++    bejTreeInitSet(&actions, "Actions");
++
++    static struct RedfishPropertyParent drRst;
++    bejTreeInitSet(&drRst, "#Drive.Reset");
++
++    static struct RedfishPropertyLeafString drRstTarget;
++    bejTreeAddString(&drRst, &drRstTarget, "target",
++                     "/redfish/v1/drives/1/Actions/Drive.Reset");
++
++    static struct RedfishPropertyLeafString drRstTitle;
++    bejTreeAddString(&drRst, &drRstTitle, "title", "Reset a Drive");
++
++    static struct RedfishPropertyParent drRstType;
++    bejTreeInitPropertyAnnotated(&drRstType, "ResetType");
++
++    static struct RedfishPropertyParent drRstTypeAllowable;
++    bejTreeInitArray(&drRstTypeAllowable, "@Redfish.AllowableValues");
++
++    static struct RedfishPropertyLeafString drRstTypeAllowableS1;
++    bejTreeAddString(&drRstTypeAllowable, &drRstTypeAllowableS1, "", "On");
++
++    static struct RedfishPropertyLeafString drRstTypeAllowableS2;
++    bejTreeAddString(&drRstTypeAllowable, &drRstTypeAllowableS2, "",
++                     "ForceOff");
++
++    static struct RedfishPropertyLeafString drRstTypeAllowableS3;
++    bejTreeAddString(&drRstTypeAllowable, &drRstTypeAllowableS3, "",
++                     "ForceRestart");
++
++    static struct RedfishPropertyLeafString drRstTypeAllowableS4;
++    bejTreeAddString(&drRstTypeAllowable, &drRstTypeAllowableS4, "", "Nmi");
++
++    static struct RedfishPropertyLeafString drRstTypeAllowableS5;
++    bejTreeAddString(&drRstTypeAllowable, &drRstTypeAllowableS5, "", "ForceOn");
++
++    static struct RedfishPropertyLeafString drRstTypeAllowableS6;
++    bejTreeAddString(&drRstTypeAllowable, &drRstTypeAllowableS6, "",
++                     "PushPowerButton");
++
++    bejTreeLinkChildToParent(&drRstType, &drRstTypeAllowable);
++    bejTreeLinkChildToParent(&drRst, &drRstType);
++    bejTreeLinkChildToParent(&actions, &drRst);
++    bejTreeLinkChildToParent(&root, &actions);
++
++    static struct RedfishPropertyParent statusAnt;
++    bejTreeInitPropertyAnnotated(&statusAnt, "Status");
++
++    static struct RedfishPropertyParent statusAntMsgExtInfo;
++    bejTreeInitArray(&statusAntMsgExtInfo, "@Message.ExtendedInfo");
++
++    static struct RedfishPropertyParent statusAntMsgExtInfoSet1;
++    bejTreeInitSet(&statusAntMsgExtInfoSet1, nullptr);
++
++    static struct RedfishPropertyLeafString statusAntMsgExtInfoSet1P1;
++    bejTreeAddString(&statusAntMsgExtInfoSet1, &statusAntMsgExtInfoSet1P1,
++                     "MessageId", "PredictiveFailure");
++
++    static struct RedfishPropertyParent statusAntMsgExtInfoSet1P2;
++    bejTreeInitArray(&statusAntMsgExtInfoSet1P2, "RelatedProperties");
++    bejTreeLinkChildToParent(&statusAntMsgExtInfoSet1,
++                             &statusAntMsgExtInfoSet1P2);
++
++    static struct RedfishPropertyLeafString statusAntMsgExtInfoSet1P2Ele1;
++    bejTreeAddString(&statusAntMsgExtInfoSet1P2, &statusAntMsgExtInfoSet1P2Ele1,
++                     "", "FailurePredicted");
++
++    static struct RedfishPropertyLeafString statusAntMsgExtInfoSet1P2Ele2;
++    bejTreeAddString(&statusAntMsgExtInfoSet1P2, &statusAntMsgExtInfoSet1P2Ele2,
++                     "", "MediaType");
++
++    bejTreeLinkChildToParent(&statusAntMsgExtInfo, &statusAntMsgExtInfoSet1);
++    bejTreeLinkChildToParent(&statusAnt, &statusAntMsgExtInfo);
++    bejTreeLinkChildToParent(&root, &statusAnt);
++
++    static struct RedfishPropertyParent identifiers;
++    bejTreeInitArray(&identifiers, "Identifiers");
++    bejTreeLinkChildToParent(&root, &identifiers);
++
++    static struct RedfishPropertyParent links;
++    bejTreeInitSet(&links, "Links");
++    bejTreeLinkChildToParent(&root, &links);
++
++    return &root;
++}
++
++/**
++ * @brief Storage for an array of links with an annotated odata.count.
++ *
++ * This doesn't contain storage for the link itself.
++ *
++ * Eg:
++ * "Contains": [],
++ * "Contains@odata.count": 0,
++ */
++struct RedfishArrayOfLinksJson
++{
++    struct RedfishPropertyParent array;
++    struct RedfishPropertyParent annotatedProperty;
++    struct RedfishPropertyLeafInt count;
++};
++
++/**
++ * @brief Storage for a single odata.id link inside a JSON "Set" object.
++ *
++ * Eg: FieldName: {
++ *   "@odata.id": "/redfish/v1/Chassis/Something"
++ * }
++ */
++struct RedfishLinkJson
++{
++    struct RedfishPropertyParent set;
++    struct RedfishPropertyLeafString odataId;
++};
++
++void addLinkToTree(struct RedfishPropertyParent* parent,
++                   struct RedfishPropertyParent* linkSet,
++                   const char* linkSetLabel,
++                   struct RedfishPropertyLeafString* odataId,
++                   const char* linkValue)
++{
++    bejTreeInitSet(linkSet, linkSetLabel);
++    bejTreeAddString(linkSet, odataId, "@odata.id", linkValue);
++    bejTreeLinkChildToParent(parent, linkSet);
++}
++
++void redfishCreateArrayOfLinksJson(struct RedfishPropertyParent* parent,
++                                   const char* arrayName, int linkCount,
++                                   const char* const links[],
++                                   struct RedfishArrayOfLinksJson* linksInfo,
++                                   struct RedfishLinkJson* linkJsonArray)
++{
++    bejTreeInitArray(&linksInfo->array, arrayName);
++    bejTreeLinkChildToParent(parent, &linksInfo->array);
++
++    bejTreeInitPropertyAnnotated(&linksInfo->annotatedProperty, arrayName);
++    bejTreeAddInteger(&linksInfo->annotatedProperty, &linksInfo->count,
++                      "@odata.count", linkCount);
++    bejTreeLinkChildToParent(parent, &linksInfo->annotatedProperty);
++
++    for (int i = 0; i < linkCount; ++i)
++    {
++        addLinkToTree(&linksInfo->array, &linkJsonArray[i].set, NULL,
++                      &linkJsonArray[i].odataId, links[i]);
++    }
++}
++
++struct RedfishPropertyParent* createChassisResource()
++{
++    constexpr int containsLinkCount = 2;
++    const char* contains[containsLinkCount] = {"/redfish/v1/Chassis/Disk_0",
++                                               "/redfish/v1/Chassis/Disk_1"};
++    const char* storage[1] = {"/redfish/v1/Systems/system/Storage/SATA"};
++    const char* drives[1] = {"/redfish/v1/Chassis/SomeChassis/Drives/SATA_0"};
++    static struct RedfishPropertyParent root;
++    static struct RedfishPropertyLeafString odataId;
++    static struct RedfishPropertyParent links;
++    static struct RedfishPropertyParent computerSystemsArray;
++    static struct RedfishPropertyParent computerSystemsLinkSet;
++    static struct RedfishPropertyLeafString computerSystemsLinkOdataId;
++    static struct RedfishPropertyParent containedBySet;
++    static struct RedfishPropertyLeafString containedByOdataId;
++    static struct RedfishArrayOfLinksJson containsArray;
++    static struct RedfishLinkJson containsLinks[containsLinkCount];
++    static struct RedfishArrayOfLinksJson storageArray;
++    static struct RedfishLinkJson storageLink;
++    static struct RedfishArrayOfLinksJson drives_array;
++    static struct RedfishLinkJson drive_link;
++
++    bejTreeInitSet(&root, "Chassis");
++    bejTreeAddString(&root, &odataId, "@odata.id",
++                     "/redfish/v1/Chassis/SomeChassis");
++
++    bejTreeInitSet(&links, "Links");
++    bejTreeLinkChildToParent(&root, &links);
++
++    bejTreeInitArray(&computerSystemsArray, "ComputerSystems");
++    bejTreeLinkChildToParent(&links, &computerSystemsArray);
++
++    addLinkToTree(&computerSystemsArray, &computerSystemsLinkSet, "",
++                  &computerSystemsLinkOdataId, "/redfish/v1/Systems/system");
++
++    addLinkToTree(&links, &containedBySet, "ContainedBy", &containedByOdataId,
++                  "/redfish/v1/Chassis/SomeOtherChassis");
++
++    redfishCreateArrayOfLinksJson(&links, "Contains", containsLinkCount,
++                                  contains, &containsArray, containsLinks);
++
++    redfishCreateArrayOfLinksJson(&links, "Storage", /*linkCount=*/1, storage,
++                                  &storageArray, &storageLink);
++
++    redfishCreateArrayOfLinksJson(&links, "Drives", /*linkCount=*/1, drives,
++                                  &drives_array, &drive_link);
++
++    return &root;
++}
++
++TEST_P(BejEncoderTest, Encode)
++{
++    const BejEncoderTestParams& test_case = GetParam();
++    auto inputsOrErr = loadInputs(test_case.inputFiles);
++    EXPECT_TRUE(inputsOrErr);
++
++    BejDictionaries dictionaries = {
++        .schemaDictionary = inputsOrErr->schemaDictionary,
++        .annotationDictionary = inputsOrErr->annotationDictionary,
++        .errorDictionary = inputsOrErr->errorDictionary,
++    };
++
++    std::vector<uint8_t> outputBuffer;
++    struct BejEncoderOutputHandler output = {
++        .handlerContext = &outputBuffer,
++        .recvOutput = &recvOutput,
++    };
++
++    std::vector<void*> pointerStack;
++    struct BejPointerStackCallback stackCallbacks = {
++        .stackContext = &pointerStack,
++        .stackEmpty = stackEmpty,
++        .stackPeek = stackPeek,
++        .stackPop = stackPop,
++        .stackPush = stackPush,
++        .deleteStack = NULL,
++    };
++
++    bejEncode(&dictionaries, BEJ_DICTIONARY_START_AT_HEAD, bejMajorSchemaClass,
++              test_case.createResource(), &output, &stackCallbacks);
++
++    BejDecoderJson decoder;
++    EXPECT_THAT(decoder.decode(dictionaries, std::span(outputBuffer)), 0);
++    std::string decoded = decoder.getOutput();
++    nlohmann::json jsonDecoded = nlohmann::json::parse(decoded);
++
++    if (!test_case.expectedJson.empty())
++    {
++        inputsOrErr->expectedJson =
++            nlohmann::json::parse(test_case.expectedJson);
++    }
++    EXPECT_TRUE(jsonDecoded.dump() == inputsOrErr->expectedJson.dump());
++}
++
++TEST_P(BejEncoderTest, EncodeWrapper)
++{
++    const BejEncoderTestParams& test_case = GetParam();
++    auto inputsOrErr = loadInputs(test_case.inputFiles);
++    EXPECT_TRUE(inputsOrErr);
++
++    BejDictionaries dictionaries = {
++        .schemaDictionary = inputsOrErr->schemaDictionary,
++        .annotationDictionary = inputsOrErr->annotationDictionary,
++        .errorDictionary = inputsOrErr->errorDictionary,
++    };
++
++    libbej::BejEncoderJson encoder;
++    encoder.encode(&dictionaries, bejMajorSchemaClass,
++                   test_case.createResource());
++
++    std::vector<uint8_t> outputBuffer = encoder.getOutput();
++    BejDecoderJson decoder;
++    EXPECT_THAT(decoder.decode(dictionaries, std::span(outputBuffer)), 0);
++    std::string decoded = decoder.getOutput();
++    nlohmann::json jsonDecoded = nlohmann::json::parse(decoded);
++
++    if (!test_case.expectedJson.empty())
++    {
++        inputsOrErr->expectedJson =
++            nlohmann::json::parse(test_case.expectedJson);
++    }
++    EXPECT_TRUE(jsonDecoded.dump() == inputsOrErr->expectedJson.dump());
++
++    // Try using the same encoder object again to ensure that the same object
++    // does the encoding correctly
++    encoder.encode(&dictionaries, bejMajorSchemaClass,
++                   test_case.createResource());
++
++    outputBuffer = encoder.getOutput();
++
++    EXPECT_THAT(decoder.decode(dictionaries, std::span(outputBuffer)), 0);
++    decoded = decoder.getOutput();
++    jsonDecoded = nlohmann::json::parse(decoded);
++
++    if (!test_case.expectedJson.empty())
++    {
++        inputsOrErr->expectedJson =
++            nlohmann::json::parse(test_case.expectedJson);
++    }
++    EXPECT_TRUE(jsonDecoded.dump() == inputsOrErr->expectedJson.dump());
++}
++
++/**
++ * TODO: Add more test cases.
++ */
++
++INSTANTIATE_TEST_SUITE_P(
++    , BejEncoderTest,
++    testing::ValuesIn<BejEncoderTestParams>({
++        {"DriveOEM", driveOemTestFiles, driveOemJson, &createDriveOem},
++        {"DummySimple", dummySimpleTestFiles, "", &createDummyResource},
++        {"Chassis", chassisTestFiles, "", &createChassisResource},
++    }),
++    [](const testing::TestParamInfo<BejEncoderTest::ParamType>& info) {
++    return info.param.testName;
++});
++
++} // namespace libbej
+diff --git a/test/dictionaries/chassis_dict.bin b/test/dictionaries/chassis_dict.bin
+new file mode 100644
+index 0000000000000000000000000000000000000000..88b3b4de5db2f684bd5280a6e62edb6f733cfbb9
+GIT binary patch
+literal 4576
+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
+R9G5}BI{^+0;mf`Y{|En(4lDow
+
+literal 0
+HcmV?d00001
+
+diff --git a/test/encoded/chassis_enc.bin b/test/encoded/chassis_enc.bin
+new file mode 100644
+index 0000000000000000000000000000000000000000..a4d4172b45a60d271b152804f3223bc4776a0063
+GIT binary patch
+literal 187
+zcmZSh@Zlo^0|O%vt!HFnR19QfQS~ukVB}$7oX^O?$RNNd#K;Je<pxp^SwjX!CS<-5
+y10#z7qY_XziZWv~WhOvn3mDlLWepgCN`<f(Y|6kW1XIDt$cIIR83Q99Tm=Bk%n&;O
+
+literal 0
+HcmV?d00001
+
+diff --git a/test/include/bej_common_test.hpp b/test/include/bej_common_test.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..74d8c833c294a5fb25571d7daa211d3fe9ab06f4
+--- /dev/null
++++ b/test/include/bej_common_test.hpp
+@@ -0,0 +1,109 @@
++#include "bej_dictionary.h"
++#include "bej_encoder_core.h"
++#include "bej_tree.h"
++
++#include "nlohmann/json.hpp"
++
++#include <fstream>
++#include <iostream>
++#include <optional>
++#include <span>
++
++namespace libbej
++{
++
++// Buffer size for storing a single binary file data.
++constexpr uint32_t maxBufferSize = 16 * 1024;
++
++struct BejTestInputFiles
++{
++    const char* jsonFile;
++    const char* schemaDictionaryFile;
++    const char* annotationDictionaryFile;
++    const char* errorDictionaryFile;
++    const char* encodedStreamFile;
++};
++
++struct BejTestInputs
++{
++    nlohmann::json expectedJson;
++    const uint8_t* schemaDictionary;
++    const uint8_t* annotationDictionary;
++    const uint8_t* errorDictionary;
++    std::span<const uint8_t> encodedStream;
++};
++
++std::streamsize readBinaryFile(const char* fileName, std::span<uint8_t> buffer)
++{
++    std::ifstream inputStream(fileName, std::ios::binary);
++    if (!inputStream.is_open())
++    {
++        std::cerr << "Cannot open file: " << fileName << "\n";
++        return 0;
++    }
++    auto readLength = inputStream.readsome(
++        reinterpret_cast<char*>(buffer.data()), buffer.size_bytes());
++    if (inputStream.peek() != EOF)
++    {
++        std::cerr << "Failed to read the complete file: " << fileName
++                  << "  read length: " << readLength << "\n";
++        return 0;
++    }
++    return readLength;
++}
++
++std::optional<BejTestInputs> loadInputs(const BejTestInputFiles& files,
++                                        bool readErrorDictionary = false)
++{
++    std::ifstream jsonInput(files.jsonFile);
++    if (!jsonInput.is_open())
++    {
++        std::cerr << "Cannot open file: " << files.jsonFile << "\n";
++        return std::nullopt;
++    }
++    nlohmann::json expJson;
++    jsonInput >> expJson;
++
++    static uint8_t schemaDictBuffer[maxBufferSize];
++    if (readBinaryFile(files.schemaDictionaryFile,
++                       std::span(schemaDictBuffer, maxBufferSize)) == 0)
++    {
++        return std::nullopt;
++    }
++
++    static uint8_t annoDictBuffer[maxBufferSize];
++    if (readBinaryFile(files.annotationDictionaryFile,
++                       std::span(annoDictBuffer, maxBufferSize)) == 0)
++    {
++        return std::nullopt;
++    }
++
++    static uint8_t encBuffer[maxBufferSize];
++    auto encLen = readBinaryFile(files.encodedStreamFile,
++                                 std::span(encBuffer, maxBufferSize));
++    if (encLen == 0)
++    {
++        return std::nullopt;
++    }
++
++    static uint8_t errorDict[maxBufferSize];
++    if (readErrorDictionary)
++    {
++        if (readBinaryFile(files.errorDictionaryFile,
++                           std::span(errorDict, maxBufferSize)) == 0)
++        {
++            return std::nullopt;
++        }
++    }
++
++    BejTestInputs inputs = {
++        .expectedJson = expJson,
++        .schemaDictionary = schemaDictBuffer,
++        .annotationDictionary = annoDictBuffer,
++        .errorDictionary = errorDict,
++        .encodedStream = std::span(encBuffer, encLen),
++    };
++    return inputs;
++}
++
++} // namespace libbej
+diff --git a/test/json/chassis.json b/test/json/chassis.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..40cc88de3f9df10dbc545031e67fb52db5510380
+--- /dev/null
++++ b/test/json/chassis.json
+@@ -0,0 +1,34 @@
++{
++    "@odata.id": "/redfish/v1/Chassis/SomeChassis",
++    "Links": {
++        "ComputerSystems": [
++            {
++                "@odata.id": "/redfish/v1/Systems/system"
++            }
++        ],
++        "ContainedBy": {
++            "@odata.id": "/redfish/v1/Chassis/SomeOtherChassis"
++        },
++        "Contains": [
++            {
++                "@odata.id": "/redfish/v1/Chassis/Disk_0"
++            },
++            {
++                "@odata.id": "/redfish/v1/Chassis/Disk_1"
++            }
++        ],
++        "Contains@odata.count": 2,
++        "Storage": [
++            {
++                "@odata.id": "/redfish/v1/Systems/system/Storage/SATA"
++            }
++        ],
++        "Storage@odata.count": 1,
++        "Drives": [
++            {
++                "@odata.id": "/redfish/v1/Chassis/SomeChassis/Drives/SATA_0"
++            }
++        ],
++        "Drives@odata.count": 1
++    }
++}
+diff --git a/test/meson.build b/test/meson.build
+index a4ddfe136008bc85ae4d2eb6ac5bfa4a7ad8e959..c61ab8cef3c5c4b0aa950b7095c8f0352fcd8e33 100644
+--- a/test/meson.build
++++ b/test/meson.build
+@@ -20,10 +20,14 @@ gtests = [
+   'bej_common',
+   'bej_dictionary',
+   'bej_tree',
++  'bej_encoder'
+ ]
++
++libbej_test_incs = include_directories('include')
+ foreach t : gtests
+   test(t, executable(t.underscorify(), t + '_test.cpp',
+                      build_by_default: false,
+                      implicit_include_directories: false,
++                     include_directories: libbej_test_incs,
+                      dependencies: [libbej, gtest, gmock]))
+ endforeach
+-- 
+2.34.1
+

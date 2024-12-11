@@ -1,0 +1,311 @@
+From b961f6a896acce3b45f2795b32ebc445a08b3366 Mon Sep 17 00:00:00 2001
+From: Brian Ma <chma0@nuvoton.com>
+Date: Mon, 6 Jan 2025 15:00:23 +0800
+Subject: [PATCH 2/2] Update RDED resource ID table
+
+Upstream-Status: Inappropriate [oe-specific]
+
+Signed-off-by: Brian Ma <chma0@nuvoton.com>
+---
+ libpldmresponder/base.cpp                |  9 +++
+ pldmtool/pldm_base_cmd.cpp               |  1 +
+ rded/helper/common.hpp                   |  3 +-
+ rded/helper/discovery/base_discovery.cpp |  2 +
+ rded/helper/discovery/rde_discovery.cpp  | 23 ++++----
+ rded/helper/mctpsetup.hpp                |  4 +-
+ rded/helper/resource_id_mapper.hpp       | 72 ++++++++++++++++++++++++
+ rded/rded.cpp                            | 21 ++++++-
+ 8 files changed, 121 insertions(+), 14 deletions(-)
+
+diff --git a/libpldmresponder/base.cpp b/libpldmresponder/base.cpp
+index 2eae0496c..59a8abf2e 100644
+--- a/libpldmresponder/base.cpp
++++ b/libpldmresponder/base.cpp
+@@ -7,6 +7,8 @@
+ #include <libpldm/bios.h>
+ #include <libpldm/fru.h>
+ #include <libpldm/platform.h>
++#include <libpldm/firmware_update.h>
++#include <libpldm/pldm_rde.h>
+ 
+ #include <array>
+ #include <cstring>
+@@ -43,6 +45,13 @@ static const std::map<Type, Cmd> capabilities{
+     {PLDM_FRU,
+      {PLDM_GET_FRU_RECORD_TABLE_METADATA, PLDM_GET_FRU_RECORD_TABLE,
+       PLDM_GET_FRU_RECORD_BY_OPTION}},
++    {PLDM_FWUP,
++     {PLDM_GET_STATUS, PLDM_GET_FIRMWARE_PARAMETERS,
++     PLDM_QUERY_DEVICE_IDENTIFIERS}},
++    {PLDM_RDE,
++     {PLDM_NEGOTIATE_REDFISH_PARAMETERS, PLDM_NEGOTIATE_MEDIUM_PARAMETERS,
++     PLDM_GET_SCHEMA_DICTIONARY, PLDM_GET_SCHEMA_FILE, PLDM_RDE_OPERATION_INIT,
++     PLDM_RDE_OPERATION_COMPLETE, PLDM_RDE_MULTIPART_RECEIVE}},
+ #ifdef OEM_IBM
+     {PLDM_OEM,
+      {PLDM_HOST_GET_ALERT_STATUS, PLDM_GET_FILE_TABLE, PLDM_READ_FILE,
+diff --git a/pldmtool/pldm_base_cmd.cpp b/pldmtool/pldm_base_cmd.cpp
+index 2acbbe1aa..7c2a43efd 100644
+--- a/pldmtool/pldm_base_cmd.cpp
++++ b/pldmtool/pldm_base_cmd.cpp
+@@ -26,6 +26,7 @@ std::vector<std::unique_ptr<CommandInterface>> commands;
+ const std::map<const char*, pldm_supported_types> pldmTypes{
+     {"base", PLDM_BASE},   {"platform", PLDM_PLATFORM},
+     {"bios", PLDM_BIOS},   {"fru", PLDM_FRU},
++    {"fw update", PLDM_FWUP}, {"rde", PLDM_RDE},
+ #ifdef OEM_IBM
+     {"oem-ibm", PLDM_OEM},
+ #endif
+diff --git a/rded/helper/common.hpp b/rded/helper/common.hpp
+index 87639d0fd..d1b3f0184 100644
+--- a/rded/helper/common.hpp
++++ b/rded/helper/common.hpp
+@@ -2,8 +2,9 @@
+ 
+ #define PLDM_MAX_REQUEST_BYTES 2048
+ #define MAX_RETRIES_FOR_REQUEST 500
+-#define MAX_RETRIES_MCTP_SOCK_FAILURE 5
++#define MAX_RETRIES_MCTP_SOCK_FAILURE 2
+ #define MAX_LOOP_ITERATION_STATE_MACHINE 50
++#define RDE_DEV_EID 0x0A
+ constexpr bool DEBUG = true;
+ enum ContextState
+ {
+diff --git a/rded/helper/discovery/base_discovery.cpp b/rded/helper/discovery/base_discovery.cpp
+index 0cbc73a6d..86c166211 100644
+--- a/rded/helper/discovery/base_discovery.cpp
++++ b/rded/helper/discovery/base_discovery.cpp
+@@ -251,6 +251,8 @@ int performBaseDiscovery(std::string rdeDevice, int fd, int netId, int eid,
+             << rc << "\n";
+         return rc;
+     }
++    std::cerr << "net id: " << std::to_string(netId) << ", eid: " <<
++        std::to_string(eid) << ", iid:" << std::to_string(instanceId) << "\n";
+     std::cerr << "Triggering PLDM Base discovery...\n";
+     rc = pldm_base_start_discovery(ctx.get());
+     if (-1 == rc)
+diff --git a/rded/helper/discovery/rde_discovery.cpp b/rded/helper/discovery/rde_discovery.cpp
+index 864ac652f..fb5b4943c 100644
+--- a/rded/helper/discovery/rde_discovery.cpp
++++ b/rded/helper/discovery/rde_discovery.cpp
+@@ -139,11 +139,13 @@ int initManager(const std::string& rdeDeviceId, int netId)
+     std::unique_ptr<bitfield16_t> mcFeatures = std::make_unique<bitfield16_t>();
+     mcFeatures->value = 102; // Fixed for now
+     std::cout << "Initializing RDE Manager...\n";
+-    std::vector<uint32_t> resourceIds = {
+-        /*0x00000000, 0x00010000, 0x00020000, 0x00030000, 0x00040000, 0x00050000,
++    /*std::vector<uint32_t> resourceIds = {
++        0x00000000, 0x00010000, 0x00020000, 0x00030000, 0x00040000, 0x00050000,
+         0x00060000, 0x00070000, 0x00080000, 0x00090000, 0x000a0000, 0x000b0000,
+         0x000c0000, 0x000d0000, 0x000e0000, 0x000f0000, 0x00100000, 0xffffffff};*/
+-        0x0, 0xffffffff}; // Fixed for RDE device
++    // Fixed for RDE device
++    std::vector<uint32_t> resourceIds = {
++        0x0, 0x00010000, 0x00020000, 0x00030000, 0xffffffff};
+ 
+     std::unique_ptr<struct pldm_rde_requester_manager> manager =
+         std::make_unique<struct pldm_rde_requester_manager>();
+@@ -310,15 +312,16 @@ int verifyChecksumForMultipartRecv(const std::vector<uint8_t>& payload)
+     uint8_t byte3 = payload[payloadLength - 1];
+ 
+     uint32_t checksumReceived = byte0 | byte1 << 8 | byte2 << 16 | byte3 << 24;
++    if (DEBUG)
++    {
++        std::cerr << "For RDE Op: Checksum Verified, Calculated Checksum: "
++                    << std::to_string(calculatedChecksum)
++                    << " , Received Checksum: "
++                    << std::to_string(checksumReceived) << ", payload size: "
++                    << std::to_string(payload.size()) << std::endl;
++    }
+     if (calculatedChecksum == checksumReceived)
+     {
+-        if (DEBUG)
+-        {
+-            std::cerr << "For RDE Op: Checksum Verified, Calculated Checksum: "
+-                      << std::to_string(calculatedChecksum)
+-                      << " , Received Checksum: "
+-                      << std::to_string(checksumReceived) << std::endl;
+-        }
+         return PLDM_RDE_REQUESTER_SUCCESS;
+     }
+     std::cerr
+diff --git a/rded/helper/mctpsetup.hpp b/rded/helper/mctpsetup.hpp
+index b780422d1..e31961b39 100644
+--- a/rded/helper/mctpsetup.hpp
++++ b/rded/helper/mctpsetup.hpp
+@@ -321,7 +321,9 @@ int setupOnePort(const std::string& port, std::string udevid)
+         sleep(5);
+         // Setting up local addresses
+         std::string localAddrCmd = "mctp addr add 8 dev " + mctpName;
+-        std::string routeCmd = "mctp route add 9 via " + mctpName;
++        //std::string routeCmd = "mctp route add 9 via " + mctpName;
++        std::string routeCmd = "mctp route add " + std::to_string(RDE_DEV_EID) +
++            " via " + mctpName;
+         if (DEBUG)
+         {
+             std::cerr << "Executing local addr: " << localAddrCmd << "\n";
+diff --git a/rded/helper/resource_id_mapper.hpp b/rded/helper/resource_id_mapper.hpp
+index ec7350ea6..842f0eb22 100644
+--- a/rded/helper/resource_id_mapper.hpp
++++ b/rded/helper/resource_id_mapper.hpp
+@@ -4,11 +4,82 @@
+  * This would not be used once the PDR is implemented
+  *
+  */
++#include <errno.h>
++
++#include <climits>
++#include <cstdint>
+ #include <iostream>
++#include <sstream>
+ #include <string>
+ #include <string_view>
+ #include <unordered_map>
+ 
++std::unordered_map<std::string_view, uint32_t> resourceIdMap = {
++    {"/redfish/v1/Chassis", 0x00000000},
++    {"/redfish/v1/Chassis/EVB_ARBEL_NUVOTON", 0x00010000},
++    {"/redfish/v1/Chassis/EVB_ARBEL_NUVOTON/Sensors", 0x00020000},
++    {"/redfish/v1/Chassis/EVB_ARBEL_NUVOTON/Sensors/AVSB", 0x00030000},
++    {"/redfish/v1/Chassis/EVB_ARBEL_NUVOTON/Sensors/VCC", 0x00030001},
++    {"/redfish/v1/Chassis/EVB_ARBEL_NUVOTON/Sensors/VHIF", 0x00030002},
++    {"/redfish/v1/Chassis/EVB_ARBEL_NUVOTON/Sensors/VSB", 0x00030003},
++    {"/redfish/v1/Chassis/EVB_ARBEL_NUVOTON/Power", 0x00090000},
++    {"/redfish/v1/Chassis/EVB_ARBEL_NUVOTON/Drives", 0x0A000000},
++    {"/redfish/v1/Chassis/EVB_ARBEL_NUVOTON/EnvironmentMetrics", 0x0A000001},
++    {"/redfish/v1/Chassis/EVB_ARBEL_NUVOTON/PowerSubsystem", 0x0A000002},
++    {"/redfish/v1/Chassis/EVB_ARBEL_NUVOTON/Thermal", 0x0A000003},
++    {"/redfish/v1/Chassis/EVB_ARBEL_NUVOTON/ThermalSubsystem", 0x0A000004},
++    {"/redfish/v1/Managers/bmc", 0x0A000005},
++    {"/redfish/v1/Systems/system", 0x0A000006},
++};
++
++// replace %Lxxxxxx with resourceIdMap value
++std::string replaceOdataId(const std::string& str)
++{
++    // std::string result;
++    size_t pos = 0;
++    size_t start = 0, end = 0;
++    uint32_t i;
++    std::stringstream ss;
++    const char* sp = str.c_str();
++    while ((pos = str.find("%L", start)) != std::string::npos)
++    {
++        ss << std::string_view(sp + start, pos - start);
++        end = str.find_first_not_of("0123456789", pos + 2);
++        if (end == std::string::npos)
++        {
++            end = str.size();
++        }
++        std::string_view id(sp + pos + 2, end - pos - 2);
++        // std::cout << "id:" << id << std::endl;
++        i = (uint32_t)atoi(id.data());
++        if (errno == ERANGE)
++        {
++            std::cerr << "atoi overflow, errno: " << errno << std::endl;
++            errno = 0;
++        }
++        auto it = resourceIdMap.begin();
++        for (; it != resourceIdMap.end(); ++it)
++        {
++            if (it->second == i)
++            {
++                ss << it->first;
++                break;
++            }
++        }
++        if (it == resourceIdMap.end())
++        {
++            ss << "%L" << i;
++            std::cout << "resource id 0x" << std::hex << i << " not found"
++                      << std::endl;
++        }
++        start = end;
++    }
++    // handle remain string
++    ss << str.substr(start);
++    return ss.str();
++}
++
++/*
+ std::unordered_map<std::string_view, uint32_t> resourceIdMap = {
+     {"/redfish/v1/Chassis", 0x00000000},
+     {"/redfish/v1/Chassis/Tray", 0x00010000},
+@@ -196,6 +267,7 @@ std::unordered_map<std::string_view, uint32_t> resourceIdMap = {
+     {"/redfish/v1/Storage/SATA", 0x000e0000},
+     {"/redfish/v1/Storage/SATA/Controllers", 0x000f0000},
+     {"/redfish/v1/Storage/SATA/Controllers/ioc", 0x00100000}};
++*/
+ 
+ int getResourceIdForUri(std::string_view uri, uint32_t& resourceId)
+ {
+diff --git a/rded/rded.cpp b/rded/rded.cpp
+index ecd83d023..95090223e 100644
+--- a/rded/rded.cpp
++++ b/rded/rded.cpp
+@@ -41,7 +41,8 @@ using DbusVariant = std::variant<std::string, uint64_t, uint32_t, uint16_t,
+                                  uint8_t, sdbusplus::message::object_path>;
+ using ChangedPropertiesType = std::vector<std::pair<std::string, DbusVariant>>;
+ 
+-constexpr uint8_t DEST_EID = 9;
++//constexpr uint8_t DEST_EID = 9;
++constexpr uint8_t DEST_EID = RDE_DEV_EID;
+ // TODO(@harshtya): Change instance id to be dynamic
+ constexpr uint8_t INSTANCE_ID = 1;
+ 
+@@ -197,6 +198,17 @@ bool isActionOperation(const std::string& uri, std::string& resourceUri)
+     return false;
+ }
+ 
++void hex_dump(const uint8_t *data, uint32_t length)
++{
++	for (uint32_t i = 0; i < length; i++) {
++		std::cerr << "0x" << std::hex << (int)data[i] << " ";
++		if ((i + 1) % 16 == 0) {
++			std::cerr << std::endl;
++		}
++	}
++	std::cerr << std::endl;
++}
++
+ /**
+  * Translate BEJ to string
+  */
+@@ -256,6 +268,8 @@ std::string
+                  std::string reqPayloadJson)
+ {
+     struct pldm_rde_requester_context baseContext;
++    std::cout << "id:" << std::to_string(requestId) << ", uri:" << uri <<
++        ", udev:" << udevid << ",json:" << reqPayloadJson << std::endl;
+     int rc = getRdeFreeContextForRdeDevice(udevid, &baseContext);
+     if (rc == RDE_NO_CONTEXT_FOUND)
+     {
+@@ -402,6 +416,8 @@ std::string
+         return "Unsuccessful RDE operation with error code: " +
+                std::to_string(rc);
+     }
++    if (DEBUG)
++        hex_dump(payload, payloadLength);
+ 
+     std::string jsonResp;
+     rc = translateBejToString(resourceId, udevid, &jsonResp, &payload,
+@@ -411,6 +427,7 @@ std::string
+         std::cerr << "Unable to translate BEJ for URI: " << rawUri << "\n";
+         jsonResp = "Unsuccessful RDE operation- failed to translate bej";
+     }
++    jsonResp = replaceOdataId(jsonResp);
+     cleanupRequestId(requestId, &baseContext);
+     retryCounterMap.erase(requestId);
+     return jsonResp;
+@@ -438,7 +455,7 @@ void pldmSetup(int& fd, sdbusplus::asio::object_server& objectServer,
+         {
+             std::cerr << "PLDM/RDE Discovery failed for device: " << port
+                       << ", udev: " << udevid
+-                      << "with retry counter:" << (retryCounter + 1)
++                      << " with retry counter:" << (retryCounter + 1)
+                       << std::endl;
+             cleanupDictionaries(udevid);
+             if (retryCounter == (MAX_RETRIES_MCTP_SOCK_FAILURE - 1))
+-- 
+2.34.1
+

@@ -1,0 +1,120 @@
+From 18ed92bb79a5f2d2e2298555abea8ca37179e0fb Mon Sep 17 00:00:00 2001
+From: Konda Reddy Kachana <kkachana@google.com>
+Date: Tue, 23 May 2023 16:48:08 +0000
+Subject: [PATCH 3/4] bmcweb: send payload to RDE devices for POST operations
+
+Tested:
+Tested power on/off with 4 RDE devices
+
+Upstream-Status: Inappropriate [oe-specific]
+Change-Id: Ib38b6bdddc229a3dbc8bac3dbe3b77a56c112f1f
+Signed-off-by: Konda Reddy Kachana <kkachana@google.com>
+---
+ redfish-core/include/redfish_aggregator.hpp | 41 ++++++++++++++++-----
+ 1 file changed, 32 insertions(+), 9 deletions(-)
+
+diff --git a/redfish-core/include/redfish_aggregator.hpp b/redfish-core/include/redfish_aggregator.hpp
+index cd4aff8a..89fcf947 100644
+--- a/redfish-core/include/redfish_aggregator.hpp
++++ b/redfish-core/include/redfish_aggregator.hpp
+@@ -904,11 +904,12 @@ class RedfishAggregator
+         for (const auto& rsat : rdeSatelliteInfo)
+         {
+             uint8_t operationId = 1;
++            std::string requestPayload;
+             BMCWEB_LOG_DEBUG(
+                 " Collection Request: dbus call to RDE Daemon  operationId {}",
+                 operationId);
+             std::string targetURI(thisReq.target());
+-            BMCWEB_LOG_DEBUG("objpath {} targetURI {} udevid {}",
++            BMCWEB_LOG_DEBUG("Collections objpath {} targetURI {} udevid {}",
+                              rsat.second.objectpath, targetURI,
+                              rsat.second.udevid);
+             crow::connections::systemBus->async_method_call(
+@@ -926,8 +927,8 @@ class RedfishAggregator
+                 },
+                 "xyz.openbmc_project.rdeoperation1", rsat.second.objectpath,
+                 "xyz.openbmc_project.RdeDevice", "execute_rde",
+-                generateRandomInt(), operationId, targetURI,
+-                rsat.second.udevid);
++                generateRandomInt(), operationId, targetURI, rsat.second.udevid,
++                requestPayload);
+         }
+     }
+ 
+@@ -963,13 +964,21 @@ class RedfishAggregator
+         targetURI.erase(pos, prefix.size() + 1);
+ 
+         uint8_t operationId = 1;
++        std::string requestPayload;
++        boost::beast::http::verb method = thisReq.method();
++        if (thisReq.method() == boost::beast::http::verb::post)
++        {
++            operationId = 8;
++            requestPayload = thisReq.body();
++        }
+         BMCWEB_LOG_DEBUG(
+             " Resource Request: dbus call to RDE Daemon operationId {}",
+             operationId);
+-        BMCWEB_LOG_DEBUG("objpath {} targetURI {} udevid {}",
+-                         sat->second.objectpath, targetURI, sat->second.udevid);
++        BMCWEB_LOG_DEBUG("objpath {} targetURI {} udevid {} method {}",
++                         sat->second.objectpath, targetURI, sat->second.udevid,
++                         boost::beast::http::to_string(method));
+         crow::connections::systemBus->async_method_call(
+-            [&operationId, prefix,
++            [&operationId, method, prefix,
+              asyncResp](const boost::system::error_code ec,
+                         const std::string& jsonString) {
+             if (ec)
+@@ -978,16 +987,17 @@ class RedfishAggregator
+                                  operationId, ec.value(), ec.message());
+                 return;
+             }
+-            processRdeResponse(prefix, asyncResp, jsonString);
++            processRdeResponse(prefix, method, asyncResp, jsonString);
+             },
+             "xyz.openbmc_project.rdeoperation1", sat->second.objectpath,
+             "xyz.openbmc_project.RdeDevice", "execute_rde", generateRandomInt(),
+-            operationId, targetURI, sat->second.udevid);
++            operationId, targetURI, sat->second.udevid, requestPayload);
+     }
+     // Processes the response returned by a RDE Device and loads its
+     // contents into asyncResp
+     static void
+         processRdeResponse(std::string_view prefix,
++                           boost::beast::http::verb method,
+                            const std::shared_ptr<bmcweb::AsyncResp>& asyncResp,
+                            const std::string& respString)
+     {
+@@ -995,13 +1005,26 @@ class RedfishAggregator
+                                                        false);
+         if (jsonVal.is_discarded())
+         {
+-            BMCWEB_LOG_ERROR("Error parsing RDE Device response as JSON");
++            BMCWEB_LOG_ERROR("Error parsing RDE Device response as JSON {}",
++                             respString);
+             messages::operationFailed(asyncResp->res);
+             return;
+         }
+ 
+         BMCWEB_LOG_DEBUG("Successfully parsed RDE Device response");
+ 
++        if (method == boost::beast::http::verb::post)
++        {
++            if (jsonVal["Status"] == "Completed")
++            {
++                asyncResp->res.result(200);
++            }
++            else
++            {
++                messages::operationFailed(asyncResp->res);
++            }
++            return;
++        }
+         // TODO: For collections we  want to add the satellite responses to
+         // our response rather than just straight overwriting them if our
+         // local handling was successful (i.e. would return a 200).
+-- 
+2.43.0
+
